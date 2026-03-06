@@ -2,12 +2,10 @@ from pydantic_settings import BaseSettings
 from functools import lru_cache
 from urllib.parse import quote_plus
 
+_encoded_password = quote_plus("T3ch$upp0rt!!")
 
-    password = quote_plus("T3ch$upp0rt!!")
 class Settings(BaseSettings):
-    # Database
-
-    database_url: str = f"postgresql+asyncpg://postgres:{password}@localhost:5432/serverdeck"
+    database_url: str = f"postgresql+asyncpg://postgres:{_encoded_password}@localhost:5432/serverdeck"
 
     # JWT
     jwt_secret: str = "change-me-in-production-use-a-real-secret-key"
