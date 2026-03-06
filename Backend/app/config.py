@@ -3,9 +3,9 @@ from functools import lru_cache
 from urllib.parse import quote_plus
 
 
+    password = quote_plus("T3ch$upp0rt!!")
 class Settings(BaseSettings):
     # Database
-    password = quote_plus("T3ch$upp0rt!!")
 
     database_url: str = f"postgresql+asyncpg://postgres:{password}@localhost:5432/serverdeck"
 
