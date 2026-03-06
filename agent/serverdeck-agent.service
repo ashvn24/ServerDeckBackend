@@ -1,0 +1,17 @@
+[Unit]
+Description=ServerDeck Agent
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/serverdeck
+ExecStart=/opt/serverdeck/venv/bin/python -m serverdeck_agent.main
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=serverdeck-agent
+
+[Install]
+WantedBy=multi-user.target
