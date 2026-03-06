@@ -13,7 +13,7 @@ class Settings(BaseSettings):
     jwt_expire_hours: int = 24
 
     # CORS
-    cors_origins: list[str] = ["http://localhost:5173", "http://localhost:3000", "https://serverdeck.koushik.cc"]
+    cors_origins: list[str] = ["*", "https://serverdeck.koushik.cc"]
 
     # App
     app_name: str = "ServerDeck"
