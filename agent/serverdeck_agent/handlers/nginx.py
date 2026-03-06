@@ -28,6 +28,51 @@ BACKEND_TEMPLATE = """server {{
 }}
 """
 
+BACKEND_SSL_TEMPLATE = """# HTTP → HTTPS redirect
+server {{
+    listen 80;
+    server_name {domain};
+    return 301 https://$server_name$request_uri;
+}}
+
+# HTTPS
+server {{
+    listen 443 ssl http2;
+    server_name {domain};
+
+    # SSL Certificate
+    ssl_certificate {ssl_cert_path};
+    ssl_certificate_key {ssl_key_path};
+
+    # SSL Configuration
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers HIGH:!aNULL:!MD5;
+    ssl_prefer_server_ciphers on;
+
+    # Proxy to backend app
+    location / {{
+        proxy_pass http://127.0.0.1:{port};
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        # WebSocket support
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+
+        # Timeouts
+        proxy_connect_timeout 60s;
+        proxy_send_timeout 60s;
+        proxy_read_timeout 60s;
+    }}
+
+    # Upload size
+    client_max_body_size 50M;
+}}
+"""
+
 STATIC_TEMPLATE = """server {{
     listen 80;
     server_name {domain};
@@ -43,6 +88,43 @@ STATIC_TEMPLATE = """server {{
 }}
 """
 
+STATIC_SSL_TEMPLATE = """# HTTP → HTTPS redirect
+server {{
+    listen 80;
+    server_name {domain};
+    return 301 https://$server_name$request_uri;
+}}
+
+# HTTPS
+server {{
+    listen 443 ssl http2;
+    server_name {domain};
+
+    # SSL Certificate
+    ssl_certificate {ssl_cert_path};
+    ssl_certificate_key {ssl_key_path};
+
+    # SSL Configuration
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers HIGH:!aNULL:!MD5;
+    ssl_prefer_server_ciphers on;
+
+    root {root_path};
+    index index.html;
+
+    location / {{
+        try_files $uri $uri/ /index.html;
+    }}
+
+    location ~* \\.(js|css|png|jpg|jpeg|gif|ico|svg|woff|woff2|ttf|eot)$ {{
+        expires 1y;
+        add_header Cache-Control "public, immutable";
+    }}
+
+    client_max_body_size 50M;
+}}
+"""
+
 
 async def handle_list(params: dict) -> dict:
     """List nginx sites from sites-enabled."""
@@ -55,13 +137,27 @@ async def handle_create(params: dict) -> dict:
     """Create a new nginx site config."""
     domain = params["domain"]
     site_type = params.get("type", "backend")
+    ssl_cert_path = params.get("ssl_cert_path")
+    ssl_key_path = params.get("ssl_key_path")
 
     if site_type == "backend":
         port = params.get("upstream_port", 3000)
-        config = BACKEND_TEMPLATE.format(domain=domain, port=port)
+        if ssl_cert_path and ssl_key_path:
+            config = BACKEND_SSL_TEMPLATE.format(
+                domain=domain, port=port,
+                ssl_cert_path=ssl_cert_path, ssl_key_path=ssl_key_path,
+            )
+        else:
+            config = BACKEND_TEMPLATE.format(domain=domain, port=port)
     else:
         root_path = params.get("root_path", f"/var/www/{domain}")
-        config = STATIC_TEMPLATE.format(domain=domain, root_path=root_path)
+        if ssl_cert_path and ssl_key_path:
+            config = STATIC_SSL_TEMPLATE.format(
+                domain=domain, root_path=root_path,
+                ssl_cert_path=ssl_cert_path, ssl_key_path=ssl_key_path,
+            )
+        else:
+            config = STATIC_TEMPLATE.format(domain=domain, root_path=root_path)
 
     # Write config
     conf_path = SITES_AVAILABLE / domain
@@ -84,7 +180,7 @@ async def handle_create(params: dict) -> dict:
     # Reload nginx
     await run_cmd("systemctl reload nginx", timeout=10)
 
-    return {"domain": domain, "status": "created", "type": site_type}
+    return {"domain": domain, "status": "created", "type": site_type, "ssl": bool(ssl_cert_path)}
 
 
 async def handle_delete(params: dict) -> dict:

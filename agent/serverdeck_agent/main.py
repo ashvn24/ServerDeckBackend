@@ -46,6 +46,7 @@ HANDLERS = {
     "pm2.create": pm2.handle_create,
     # SSL
     "ssl.list": ssl.handle_list,
+    "ssl.list_available": ssl.handle_list_available,
     "ssl.issue": ssl.handle_issue,
     "ssl.renew": ssl.handle_renew,
     # Logs
