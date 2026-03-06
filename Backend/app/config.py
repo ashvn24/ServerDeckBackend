@@ -4,7 +4,7 @@ from functools import lru_cache
 
 class Settings(BaseSettings):
     # Database
-    database_url: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/serverdeck"
+    database_url: str = "postgresql+asyncpg://postgres:T3ch$upp0rt!!@localhost:5432/serverdeck"
 
     # JWT
     jwt_secret: str = "change-me-in-production-use-a-real-secret-key"
