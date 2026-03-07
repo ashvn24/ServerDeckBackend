@@ -125,12 +125,31 @@ class AgentConnection:
     async def _stream_logs(self, stream_id: str, cmd: str):
         """Run a log process and stream lines to the portal via websocket."""
         try:
+            # Send initial confirmation that the subprocess is booting
+            if self.connected:
+                await self.send({
+                    "type": "stream_chunk",
+                    "id": stream_id,
+                    "chunk": f"[*] Starting listener process..."
+                })
+
+            import os
+            env = os.environ.copy()
+            env["PYTHONUNBUFFERED"] = "1"
+            
             proc = await asyncio.create_subprocess_shell(
                 cmd,
                 stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.STDOUT
+                stderr=asyncio.subprocess.STDOUT,
+                env=env
             )
             self.active_streams[stream_id] = proc
+            
+            await self.send({
+                "type": "stream_chunk",
+                "id": stream_id,
+                "chunk": f"[*] Process started (PID: {proc.pid}). Waiting for logs..."
+            })
             
             # Read line by line
             while self.connected:
@@ -139,17 +158,33 @@ class AgentConnection:
                     break
                 line_str = line.decode("utf-8", "replace").strip("\r\n")
                 
+                if self.connected:
+                    await self.send({
+                        "type": "stream_chunk",
+                        "id": stream_id,
+                        "chunk": line_str
+                    })
+                    
+            # Process ended
+            exit_code = await proc.wait()
+            if self.connected:
                 await self.send({
                     "type": "stream_chunk",
                     "id": stream_id,
-                    "chunk": line_str
+                    "chunk": f"[*] Stream ended with exit code {exit_code}."
                 })
         except Exception as e:
             logger.error(f"Stream logs error: {e}")
+            if self.connected:
+                await self.send({
+                    "type": "stream_chunk",
+                    "id": stream_id,
+                    "chunk": f"[!] Stream completely failed to start: {e}"
+                })
         finally:
             self.active_streams.pop(stream_id, None)
             try:
-                if proc.returncode is None:
+                if proc and proc.returncode is None:
                     proc.kill()
             except Exception:
                 pass
