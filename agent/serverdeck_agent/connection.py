@@ -18,6 +18,7 @@ class AgentConnection:
         self.connected = False
         self._backoff = 5
         self._max_backoff = 60
+        self.active_streams = {}
 
     async def connect(self):
         """Connect to portal with auto-reconnect and exponential backoff."""
@@ -78,10 +79,36 @@ class AgentConnection:
                 params = data.get("params", {})
 
                 if action:
+                    if action == "logs.stop_stream":
+                        stream_id = params.get("stream_id")
+                        if stream_id in self.active_streams:
+                            proc = self.active_streams.pop(stream_id)
+                            try:
+                                proc.kill()
+                            except Exception:
+                                pass
+                        await self.send({"id": cmd_id, "status": "success", "data": {"status": "stopped"}})
+                        continue
+
                     # Process command
                     result = await self.command_handler(action, params)
+
+                    # Check if it requests streaming
+                    if "stream_cmd" in result:
+                        response = {
+                            "id": cmd_id,
+                            "status": "success",
+                            "data": {"status": "streaming_started"}
+                        }
+                        await self.send(response)
+                        
+                        stream_cmd = result["stream_cmd"]
+                        # Run the stream background task
+                        asyncio.create_task(self._stream_logs(cmd_id, stream_cmd))
+                        continue
+
                     response = {"id": cmd_id, **result}
-                    if "error" in result:
+                    if result.get("error"):
                         response["status"] = "error"
                     else:
                         response["status"] = "success"
@@ -94,6 +121,45 @@ class AgentConnection:
                 logger.error(f"Error processing command: {e}")
                 if cmd_id:
                     await self.send({"id": cmd_id, "status": "error", "error": str(e)})
+
+    async def _stream_logs(self, stream_id: str, cmd: str):
+        """Run a log process and stream lines to the portal via websocket."""
+        try:
+            proc = await asyncio.create_subprocess_shell(
+                cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT
+            )
+            self.active_streams[stream_id] = proc
+            
+            # Read line by line
+            while self.connected:
+                line = await proc.stdout.readline()
+                if not line:
+                    break
+                line_str = line.decode("utf-8", "replace").strip("\r\n")
+                
+                await self.send({
+                    "type": "stream_chunk",
+                    "id": stream_id,
+                    "chunk": line_str
+                })
+        except Exception as e:
+            logger.error(f"Stream logs error: {e}")
+        finally:
+            self.active_streams.pop(stream_id, None)
+            try:
+                if proc.returncode is None:
+                    proc.kill()
+            except Exception:
+                pass
+            
+            # Send stream ended event
+            if self.connected:
+                await self.send({
+                    "type": "stream_ended",
+                    "id": stream_id
+                })
 
     async def _telemetry_loop(self):
         """Send telemetry data at regular intervals."""

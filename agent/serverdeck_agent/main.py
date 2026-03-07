@@ -52,6 +52,7 @@ HANDLERS = {
     # Logs
     "logs.fetch": logs.handle_fetch,
     "logs.stream": logs.handle_stream,
+    "logs.stop_stream": logs.handle_stop_stream,
     # Firewall
     "firewall.list": firewall.handle_list,
     "firewall.allow": firewall.handle_allow,

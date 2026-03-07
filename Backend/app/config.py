@@ -1,11 +1,10 @@
 from pydantic_settings import BaseSettings
 from functools import lru_cache
-from urllib.parse import quote_plus
 
-_encoded_password = quote_plus("T3ch$upp0rt!!")
 
 class Settings(BaseSettings):
-    database_url: str = f"postgresql+asyncpg://postgres:{_encoded_password}@localhost:5432/serverdeck"
+    # Database
+    database_url: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/serverdeck"
 
     # JWT
     jwt_secret: str = "change-me-in-production-use-a-real-secret-key"
@@ -13,7 +12,12 @@ class Settings(BaseSettings):
     jwt_expire_hours: int = 24
 
     # CORS
-    cors_origins: list[str] = ["http://localhost:5173", "http://localhost:3000", "https://server-deck-frontend.vercel.app", "https://serverdeck.koushik.cc"]
+    cors_origins: list[str] = [
+        "http://localhost:5173", 
+        "http://localhost:3000", 
+        "https://serverdeck.koushik.cc", 
+        "https://server-deck-frontend.vercel.app"
+    ]
 
     # App
     app_name: str = "ServerDeck"

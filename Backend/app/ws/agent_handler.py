@@ -90,6 +90,15 @@ async def agent_websocket(websocket: WebSocket):
                 await _handle_telemetry(server_id, data.get("data", {}))
             elif msg_type == "scan":
                 await _handle_scan(server_id, data.get("data", {}))
+            elif msg_type in ("stream_chunk", "stream_ended"):
+                # Forward log streams directly to watchers
+                from app.ws.client_handler import forward_to_watchers
+                await forward_to_watchers(server_id, {
+                    "type": msg_type,
+                    "server_id": server_id,
+                    "id": data.get("id"),
+                    "chunk": data.get("chunk"),
+                })
             else:
                 # Command response — resolve pending future
                 cmd_id = data.get("id")

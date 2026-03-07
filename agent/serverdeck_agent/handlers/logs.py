@@ -30,12 +30,14 @@ async def handle_fetch(params: dict) -> dict:
         log_path = f"/var/log/nginx/{name}.error.log"
         result = await run_cmd(f"tail -n {lines} {log_path}", timeout=15)
 
-    return {
+    res = {
         "source": source,
         "name": name,
         "lines": result["stdout"].splitlines() if result["stdout"] else [],
-        "error": result["stderr"] if result["returncode"] != 0 else None,
     }
+    if result["returncode"] != 0:
+        res["error"] = result["stderr"] or "Command failed"
+    return res
 
 
 async def handle_stream(params: dict) -> dict:
@@ -44,12 +46,15 @@ async def handle_stream(params: dict) -> dict:
     name = params.get("name", "")
 
     if source == "systemd":
-        cmd = f"journalctl -u {name} -f --no-pager"
+        cmd = f"journalctl -u {name} -n 100 -f --no-pager"
     elif source == "nginx":
-        cmd = f"tail -f /var/log/nginx/{name}.access.log"
+        cmd = f"tail -n 100 -f /var/log/nginx/{name}.access.log"
     elif source == "pm2":
-        cmd = f"pm2 logs {name}"
+        cmd = f"pm2 logs {name} --lines 100"
     else:
         return {"error": f"Unknown source: {source}"}
 
-    return {"command": cmd}
+    return {"stream_cmd": cmd}
+    
+async def handle_stop_stream(params: dict) -> dict:
+    return {"status": "stopped"}
