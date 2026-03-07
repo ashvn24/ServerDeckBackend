@@ -51,6 +51,8 @@ async def agent_websocket(websocket: WebSocket):
         await websocket.send_json({"error": "No authentication token provided"})
         await websocket.close(code=4001)
         return
+        
+    token = token.strip()
 
     # Verify token against DB
     async with async_session_factory() as db:

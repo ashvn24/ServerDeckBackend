@@ -13,8 +13,8 @@ class AgentConfig:
         with open(path, "r") as f:
             data = json.load(f)
 
-        self.portal_url: str = data["portal_url"]  # e.g. wss://portal.example.com/ws/agent
-        self.agent_token: str = data["agent_token"]
+        self.portal_url: str = data["portal_url"].strip()
+        self.agent_token: str = data["agent_token"].strip()
         self.telemetry_interval: int = data.get("telemetry_interval", 10)
         self.scan_interval: int = data.get("scan_interval", 60)
         self.ping_interval: int = data.get("ping_interval", 30)
