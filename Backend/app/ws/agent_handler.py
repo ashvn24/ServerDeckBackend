@@ -92,15 +92,27 @@ async def agent_websocket(websocket: WebSocket):
                 await _handle_telemetry(server_id, data.get("data", {}))
             elif msg_type == "scan":
                 await _handle_scan(server_id, data.get("data", {}))
-            elif msg_type in ("stream_chunk", "stream_ended"):
-                # Forward log streams directly to watchers
-                from app.ws.client_handler import forward_to_watchers
-                await forward_to_watchers(server_id, {
+            elif msg_type in ("stream_chunk", "stream_ended", "terminal_output", "terminal_closed"):
+                # Forward streaming output to the client that initiated the
+                # stream / terminal session. Fall back to broadcasting to all
+                # watchers of the server when no direct subscriber exists.
+                from app.ws.client_handler import forward_to_stream, forward_to_watchers
+                stream_id = data.get("id")
+                payload = {
                     "type": msg_type,
                     "server_id": server_id,
-                    "id": data.get("id"),
-                    "chunk": data.get("chunk"),
-                })
+                    "id": stream_id,
+                }
+                if "chunk" in data:
+                    payload["chunk"] = data.get("chunk")
+                if "data" in data:
+                    payload["data"] = data.get("data")
+
+                delivered = False
+                if stream_id:
+                    delivered = await forward_to_stream(stream_id, payload)
+                if not delivered and msg_type in ("stream_chunk", "stream_ended"):
+                    await forward_to_watchers(server_id, payload)
             else:
                 # Command response — resolve pending future
                 cmd_id = data.get("id")

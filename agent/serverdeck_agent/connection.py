@@ -19,6 +19,7 @@ class AgentConnection:
         self._backoff = 5
         self._max_backoff = 60
         self.active_streams = {}
+        self.terminal_sessions = {}
 
     async def connect(self):
         """Connect to portal with auto-reconnect and exponential backoff."""
@@ -90,6 +91,10 @@ class AgentConnection:
                         await self.send({"id": cmd_id, "status": "success", "data": {"status": "stopped"}})
                         continue
 
+                    if action.startswith("terminal."):
+                        await self._handle_terminal(action, cmd_id, params)
+                        continue
+
                     # Process command
                     result = await self.command_handler(action, params)
 
@@ -124,6 +129,7 @@ class AgentConnection:
 
     async def _stream_logs(self, stream_id: str, cmd: str):
         """Run a log process and stream lines to the portal via websocket."""
+        proc = None
         try:
             # Send initial confirmation that the subprocess is booting
             if self.connected:
@@ -195,6 +201,77 @@ class AgentConnection:
                     "type": "stream_ended",
                     "id": stream_id
                 })
+
+    async def _handle_terminal(self, action: str, cmd_id, params: dict):
+        """Dispatch terminal.* actions to PTY-backed sessions."""
+        from serverdeck_agent.handlers.terminal import TerminalSession
+
+        session_id = params.get("session_id") or cmd_id
+
+        if action == "terminal.open":
+            if session_id in self.terminal_sessions:
+                # Reopening a session id is treated as success — the existing
+                # PTY keeps streaming.
+                await self.send({
+                    "id": cmd_id,
+                    "status": "success",
+                    "data": {"session_id": session_id, "reused": True},
+                })
+                return
+            session = TerminalSession(
+                session_id=session_id,
+                send_fn=self.send,
+                shell=params.get("shell"),
+                cols=params.get("cols", 80),
+                rows=params.get("rows", 24),
+            )
+            try:
+                session.start()
+            except Exception as e:
+                logger.error(f"terminal.open failed: {e}")
+                await self.send({"id": cmd_id, "status": "error", "error": str(e)})
+                return
+            self.terminal_sessions[session_id] = session
+            await self.send({
+                "id": cmd_id,
+                "status": "success",
+                "data": {"session_id": session_id, "shell": session.shell},
+            })
+            return
+
+        session = self.terminal_sessions.get(session_id)
+
+        if action == "terminal.input":
+            if session:
+                session.write(params.get("data", ""))
+            return
+
+        if action == "terminal.resize":
+            if session:
+                try:
+                    session.resize(int(params.get("rows", 24)), int(params.get("cols", 80)))
+                except (TypeError, ValueError):
+                    pass
+            return
+
+        if action == "terminal.close":
+            if session:
+                self.terminal_sessions.pop(session_id, None)
+                try:
+                    await session.close()
+                except Exception as e:
+                    logger.warning(f"terminal close error: {e}")
+            if cmd_id:
+                await self.send({"id": cmd_id, "status": "success"})
+            return
+
+        # Unknown terminal.* action
+        if cmd_id:
+            await self.send({
+                "id": cmd_id,
+                "status": "error",
+                "error": f"Unknown terminal action: {action}",
+            })
 
     async def _telemetry_loop(self):
         """Send telemetry data at regular intervals."""

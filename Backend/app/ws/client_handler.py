@@ -4,6 +4,7 @@ Client WebSocket Handler — /ws/client
 Browser clients connect here with JWT. Handles:
   - watch/unwatch server (subscribe to real-time updates)
   - command (sends command to agent, awaits response)
+  - terminal_open / terminal_input / terminal_resize / terminal_close
 """
 import json
 import logging
@@ -23,6 +24,42 @@ server_watchers: dict[str, set[WebSocket]] = {}
 
 # Maps websocket → set of server_ids being watched (for cleanup)
 client_watches: dict[WebSocket, set[str]] = {}
+
+# Maps stream_id (cmd_id used for logs.stream / terminal sessions) → WebSocket.
+# This guarantees streaming output is delivered to the originator regardless
+# of whether they have an active "watch" subscription on the server.
+stream_subscribers: dict[str, WebSocket] = {}
+
+# Maps websocket → set of stream_ids subscribed (for cleanup)
+client_streams: dict[WebSocket, set[str]] = {}
+
+
+def _subscribe_stream(ws: WebSocket, stream_id: str):
+    stream_subscribers[stream_id] = ws
+    client_streams.setdefault(ws, set()).add(stream_id)
+
+
+def _unsubscribe_stream(stream_id: str):
+    ws = stream_subscribers.pop(stream_id, None)
+    if ws is not None:
+        streams = client_streams.get(ws)
+        if streams is not None:
+            streams.discard(stream_id)
+
+
+async def _send_agent_fire_and_forget(server_id: str, action: str, params: dict):
+    """Send a command to the agent without awaiting a response."""
+    from app.ws.agent_handler import agent_by_server_id
+
+    ws = agent_by_server_id.get(server_id)
+    if not ws:
+        raise ConnectionError(f"Server {server_id} is not connected")
+
+    await ws.send_text(json.dumps({
+        "id": str(uuid.uuid4()),
+        "action": action,
+        "params": params,
+    }))
 
 
 @router.websocket("/ws/client")
@@ -49,6 +86,7 @@ async def client_websocket(websocket: WebSocket):
         return
 
     client_watches[websocket] = set()
+    client_streams[websocket] = set()
     logger.info(f"Client connected: user_id={user_id}")
 
     try:
@@ -78,6 +116,11 @@ async def client_websocket(websocket: WebSocket):
                 params = data.get("params", {})
                 cmd_id = data.get("id") or str(uuid.uuid4())
 
+                # Subscribe the originator to streaming output before dispatch,
+                # so chunks arriving faster than the response are not dropped.
+                if action == "logs.stream":
+                    _subscribe_stream(websocket, cmd_id)
+
                 try:
                     result = await send_command_to_agent(
                         server_id=server_id,
@@ -88,17 +131,101 @@ async def client_websocket(websocket: WebSocket):
                     )
                     await websocket.send_json(result)
                 except TimeoutError:
+                    if action == "logs.stream":
+                        _unsubscribe_stream(cmd_id)
                     await websocket.send_json({
                         "id": cmd_id,
                         "status": "error",
                         "error": "Command timed out (30s)",
                     })
                 except Exception as e:
+                    if action == "logs.stream":
+                        _unsubscribe_stream(cmd_id)
                     await websocket.send_json({
                         "id": cmd_id,
                         "status": "error",
                         "error": str(e),
                     })
+
+            elif msg_type == "terminal_open":
+                server_id = data.get("server_id")
+                cols = data.get("cols", 80)
+                rows = data.get("rows", 24)
+                shell = data.get("shell", "/bin/bash")
+                cmd_id = data.get("id") or str(uuid.uuid4())
+
+                _subscribe_stream(websocket, cmd_id)
+                try:
+                    result = await send_command_to_agent(
+                        server_id=server_id,
+                        action="terminal.open",
+                        params={
+                            "session_id": cmd_id,
+                            "cols": cols,
+                            "rows": rows,
+                            "shell": shell,
+                        },
+                        cmd_id=cmd_id,
+                        timeout=15,
+                    )
+                    result.setdefault("type", "terminal_opened")
+                    await websocket.send_json(result)
+                except Exception as e:
+                    _unsubscribe_stream(cmd_id)
+                    await websocket.send_json({
+                        "id": cmd_id,
+                        "type": "terminal_error",
+                        "status": "error",
+                        "error": str(e),
+                    })
+
+            elif msg_type == "terminal_input":
+                server_id = data.get("server_id")
+                session_id = data.get("session_id")
+                input_data = data.get("data", "")
+                if server_id and session_id:
+                    try:
+                        await _send_agent_fire_and_forget(
+                            server_id,
+                            "terminal.input",
+                            {"session_id": session_id, "data": input_data},
+                        )
+                    except ConnectionError as e:
+                        await websocket.send_json({
+                            "type": "terminal_error",
+                            "id": session_id,
+                            "error": str(e),
+                        })
+
+            elif msg_type == "terminal_resize":
+                server_id = data.get("server_id")
+                session_id = data.get("session_id")
+                cols = data.get("cols", 80)
+                rows = data.get("rows", 24)
+                if server_id and session_id:
+                    try:
+                        await _send_agent_fire_and_forget(
+                            server_id,
+                            "terminal.resize",
+                            {"session_id": session_id, "cols": cols, "rows": rows},
+                        )
+                    except ConnectionError:
+                        pass
+
+            elif msg_type == "terminal_close":
+                server_id = data.get("server_id")
+                session_id = data.get("session_id")
+                if session_id:
+                    _unsubscribe_stream(session_id)
+                if server_id and session_id:
+                    try:
+                        await _send_agent_fire_and_forget(
+                            server_id,
+                            "terminal.close",
+                            {"session_id": session_id},
+                        )
+                    except ConnectionError:
+                        pass
 
     except WebSocketDisconnect:
         logger.info(f"Client disconnected: user_id={user_id}")
@@ -113,6 +240,11 @@ async def client_websocket(websocket: WebSocket):
                 if not server_watchers[sid]:
                     del server_watchers[sid]
 
+        # Clean up stream subscriptions (terminal sessions, log streams)
+        streams = client_streams.pop(websocket, set())
+        for stream_id in streams:
+            stream_subscribers.pop(stream_id, None)
+
 
 async def forward_to_watchers(server_id: str, message: dict):
     """Forward a message to all browser clients watching a server."""
@@ -126,3 +258,19 @@ async def forward_to_watchers(server_id: str, message: dict):
     # Clean up disconnected
     for ws in disconnected:
         watchers.discard(ws)
+
+
+async def forward_to_stream(stream_id: str, message: dict) -> bool:
+    """Forward a message to the client that initiated this stream/terminal session.
+
+    Returns True if delivered, False if no subscriber was registered.
+    """
+    ws = stream_subscribers.get(stream_id)
+    if ws is None:
+        return False
+    try:
+        await ws.send_json(message)
+        return True
+    except Exception:
+        stream_subscribers.pop(stream_id, None)
+        return False
