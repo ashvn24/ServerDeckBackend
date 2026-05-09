@@ -9,6 +9,7 @@ from app.middleware.auth import get_current_user
 from app.models.user import User
 from app.models.server import Server
 from app.schemas.server import ServerCreate, ServerResponse
+from app.services.audit import record_audit
 
 router = APIRouter(prefix="/api/servers", tags=["servers"])
 settings = get_settings()
@@ -40,6 +41,10 @@ async def create_server(
     db.add(server)
     await db.flush()
     await db.refresh(server)
+    
+    # Log server creation
+    await record_audit(db, user.id, server.id, "server.create", details={"name": server.name})
+    
     return server
 
 
@@ -85,6 +90,10 @@ async def delete_server(
             print(f"Failed to send uninstall command to server {server.id}: {e}")
 
     await db.delete(server)
+    
+    # Log server deletion
+    await record_audit(db, user.id, server_id, "server.delete", details={"name": server.name})
+    
     await db.commit()
 
 

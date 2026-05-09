@@ -5,7 +5,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import get_settings
-from app.api import auth, servers, sites, dashboard, logs, agent_dist, users, folders
+from app.api import auth, servers, sites, dashboard, logs, agent_dist, users, folders, audit
 from app.ws import agent_handler, client_handler
 from app.services.alerting import check_alerts
 
@@ -56,6 +56,7 @@ app.include_router(logs.router)
 app.include_router(agent_dist.router)
 app.include_router(users.router)
 app.include_router(folders.router)
+app.include_router(audit.router)
 
 # WebSocket routers
 app.include_router(agent_handler.router)
