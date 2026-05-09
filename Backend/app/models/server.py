@@ -56,7 +56,7 @@ class Server(Base):
     team: Mapped["Team"] = relationship("Team", back_populates="servers")
     folder: Mapped["ServerFolder | None"] = relationship("ServerFolder", back_populates="servers")
     sites: Mapped[list["Site"]] = relationship("Site", back_populates="server", cascade="all, delete-orphan")
-    audit_logs: Mapped[list["AuditLog"]] = relationship("AuditLog", back_populates="server", cascade="all, delete-orphan")
+    audit_logs: Mapped[list["AuditLog"]] = relationship("AuditLog", back_populates="server")
 
 
 from app.models.user import Team  # noqa: E402, F401

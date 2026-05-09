@@ -9,6 +9,7 @@ from app.middleware.auth import get_current_user
 from app.models.user import User
 from app.models.server import Server
 from app.schemas.server import ServerCreate, ServerResponse
+from app.services.audit import record_audit
 
 router = APIRouter(prefix="/api/servers", tags=["servers"])
 settings = get_settings()
@@ -40,6 +41,11 @@ async def create_server(
     db.add(server)
     await db.flush()
     await db.refresh(server)
+    
+    # Log server creation
+    await record_audit(db, user.id, server.id, "server.create", details={"name": server.name})
+    await db.commit()
+    
     return server
 
 
@@ -70,6 +76,9 @@ async def delete_server(
     server = result.scalar_one_or_none()
     if not server:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Server not found")
+
+    # Log server deletion
+    await record_audit(db, user.id, server_id, "server.delete", details={"name": server.name})
 
     # If the server is online, try to send an uninstall command
     if server.is_online:
