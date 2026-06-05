@@ -1,8 +1,11 @@
 import asyncio
 import logging
+import os
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Depends, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
+from alembic.config import Config
+from alembic import command
 
 from app.config import get_settings
 from app.api import auth, servers, sites, dashboard, logs, agent_dist, users, folders, audit, admin, tickets
@@ -16,12 +19,24 @@ logging.basicConfig(
     format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
 )
 
+logger = logging.getLogger(__name__)
+
+
+async def run_migrations():
+    def _run():
+        alembic_cfg = Config(os.path.join(os.path.dirname(__file__), "..", "alembic.ini"))
+        command.upgrade(alembic_cfg, "head")
+    await asyncio.to_thread(_run)
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup: launch background alerting task
+    # Startup: run DB migrations then launch background alerting task
+    logger.info("Running database migrations...")
+    await run_migrations()
+    logger.info("Database migrations complete")
     alert_task = asyncio.create_task(check_alerts())
-    logging.info("ServerDeck API started — alerting task running")
+    logger.info("ServerDeck API started — alerting task running")
     yield
     # Shutdown
     alert_task.cancel()
