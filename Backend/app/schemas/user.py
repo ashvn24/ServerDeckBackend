@@ -1,4 +1,5 @@
 import datetime
+import uuid
 from pydantic import BaseModel, EmailStr
 from uuid import UUID
 
@@ -53,7 +54,39 @@ class UserManagementResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class PlatformUserResponse(BaseModel):
+    id: UUID
+    name: str
+    email: str
+    is_platform_owner: bool = True
+
+    model_config = {"from_attributes": True}
+
+
 class TokenResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
-    user: UserResponse
+    user: UserResponse | PlatformUserResponse
+    is_platform_owner: bool = False
+
+
+# ---- Admin / Org schemas ----
+
+class OrgCreate(BaseModel):
+    name: str
+    org_key: str
+    domain: str
+    admin_name: str
+    admin_email: EmailStr
+    admin_password: str
+
+
+class OrgResponse(BaseModel):
+    id: UUID
+    name: str
+    org_key: str
+    domain: str
+    schema_name: str
+    created_at: datetime.datetime
+
+    model_config = {"from_attributes": True}

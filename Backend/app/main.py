@@ -1,11 +1,11 @@
 import asyncio
 import logging
 from contextlib import asynccontextmanager
-from fastapi import FastAPI
+from fastapi import FastAPI, Depends, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import get_settings
-from app.api import auth, servers, sites, dashboard, logs, agent_dist, users, folders, audit
+from app.api import auth, servers, sites, dashboard, logs, agent_dist, users, folders, audit, admin, tickets
 from app.ws import agent_handler, client_handler
 from app.services.alerting import check_alerts
 
@@ -31,11 +31,14 @@ async def lifespan(app: FastAPI):
         pass
 
 
+from app.services.tenant import resolve_tenant
+
 app = FastAPI(
     title="ServerDeck API",
     description="Lightweight agent-based Linux server management platform",
     version="0.1.0",
     lifespan=lifespan,
+    dependencies=[Depends(resolve_tenant)]
 )
 
 # CORS
@@ -57,6 +60,8 @@ app.include_router(agent_dist.router)
 app.include_router(users.router)
 app.include_router(folders.router)
 app.include_router(audit.router)
+app.include_router(admin.router)
+app.include_router(tickets.router)
 
 # WebSocket routers
 app.include_router(agent_handler.router)

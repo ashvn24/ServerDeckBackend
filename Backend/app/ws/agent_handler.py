@@ -18,8 +18,9 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from sqlalchemy import select, update
 
-from app.database import async_session_factory
+from app.database import tenant_session, tenant_schema
 from app.models.server import Server
+from app.models.organization import AgentTokenMapping
 
 logger = logging.getLogger("serverdeck.ws.agent")
 router = APIRouter()
@@ -54,12 +55,25 @@ async def agent_websocket(websocket: WebSocket):
         
     token = token.strip()
 
-    # Verify token against DB
-    async with async_session_factory() as db:
+    # 1. Resolve tenant schema via global agent token mapping
+    async with tenant_session() as db:
+        result = await db.execute(select(AgentTokenMapping).where(AgentTokenMapping.agent_token == token))
+        mapping = result.scalar_one_or_none()
+        if not mapping:
+            await websocket.send_json({"error": "Invalid agent token"})
+            await websocket.close(code=4003)
+            return
+        schema_name = mapping.schema_name
+
+    # Set tenant context for this WebSocket connection task
+    tenant_schema.set(schema_name)
+
+    # 2. Verify server and mark online within tenant schema
+    async with tenant_session() as db:
         result = await db.execute(select(Server).where(Server.agent_token == token))
         server = result.scalar_one_or_none()
         if not server:
-            await websocket.send_json({"error": "Invalid agent token"})
+            await websocket.send_json({"error": "Invalid agent token in tenant schema"})
             await websocket.close(code=4003)
             return
 
@@ -131,7 +145,7 @@ async def agent_websocket(websocket: WebSocket):
         server_token_map.pop(server_id, None)
 
         # Mark offline
-        async with async_session_factory() as db:
+        async with tenant_session() as db:
             await db.execute(
                 update(Server).where(Server.id == server_id).values(
                     is_online=False,
@@ -143,7 +157,7 @@ async def agent_websocket(websocket: WebSocket):
 
 async def _handle_register(server_id: str, data: dict):
     """Update server info from agent registration."""
-    async with async_session_factory() as db:
+    async with tenant_session() as db:
         await db.execute(
             update(Server).where(Server.id == server_id).values(
                 hostname=data.get("hostname"),
@@ -157,7 +171,7 @@ async def _handle_register(server_id: str, data: dict):
 
 async def _handle_telemetry(server_id: str, data: dict):
     """Update server telemetry and forward to watching browser clients."""
-    async with async_session_factory() as db:
+    async with tenant_session() as db:
         await db.execute(
             update(Server).where(Server.id == server_id).values(
                 cpu_percent=data.get("cpu_percent"),
@@ -177,7 +191,7 @@ async def _handle_telemetry(server_id: str, data: dict):
 
 async def _handle_scan(server_id: str, data: dict):
     """Update server service cache and forward to watchers."""
-    async with async_session_factory() as db:
+    async with tenant_session() as db:
         await db.execute(
             update(Server).where(Server.id == server_id).values(
                 nginx_sites=data.get("nginx_sites"),

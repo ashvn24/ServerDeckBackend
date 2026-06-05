@@ -32,14 +32,28 @@ async def create_server(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
+    from app.models.organization import AgentTokenMapping
+    from app.database import tenant_schema
+
+    agent_token = secrets.token_urlsafe(32)
     server = Server(
         name=data.name,
         team_id=user.team_id,
         folder_id=data.folder_id,
-        agent_token=secrets.token_urlsafe(32),
+        agent_token=agent_token,
     )
     db.add(server)
     await db.flush()
+
+    # Store mapping in public schema
+    current_schema = tenant_schema.get()
+    token_mapping = AgentTokenMapping(
+        agent_token=agent_token,
+        schema_name=current_schema
+    )
+    db.add(token_mapping)
+    await db.commit()
+    
     await db.refresh(server)
     return server
 
@@ -88,11 +102,17 @@ async def delete_server(
             # We don't block deletion if uninstall fails (e.g. agent disconnected mid-request)
             print(f"Failed to send uninstall command to server {server.id}: {e}")
 
+    # Delete token mapping from public schema
+    from app.models.organization import AgentTokenMapping
+    mapping_result = await db.execute(
+        select(AgentTokenMapping).where(AgentTokenMapping.agent_token == server.agent_token)
+    )
+    mapping = mapping_result.scalar_one_or_none()
+    if mapping:
+        await db.delete(mapping)
+
     await db.delete(server)
-    
-    # Log server deletion
     await record_audit(db, user.id, server_id, "server.delete", details={"name": server.name})
-    
     await db.commit()
 
 

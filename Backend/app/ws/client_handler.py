@@ -27,6 +27,12 @@ server_watchers: dict[str, set[WebSocket]] = {}
 # Maps websocket → set of server_ids being watched (for cleanup)
 client_watches: dict[WebSocket, set[str]] = {}
 
+# Maps ticket_id → set of WebSocket connections watching that ticket
+ticket_watchers: dict[str, set[WebSocket]] = {}
+
+# Maps websocket → set of ticket_ids being watched (for cleanup)
+client_ticket_watches: dict[WebSocket, set[str]] = {}
+
 # Maps stream_id (cmd_id used for logs.stream / terminal sessions) → WebSocket.
 # This guarantees streaming output is delivered to the originator regardless
 # of whether they have an active "watch" subscription on the server.
@@ -80,16 +86,21 @@ async def client_websocket(websocket: WebSocket):
         payload = jwt.decode(token, settings.jwt_secret, algorithms=[settings.jwt_algorithm])
         user_id = payload.get("sub")
         team_id = payload.get("team_id")
-        if not user_id or not team_id:
+        schema_name = payload.get("tenant_schema")
+        if not user_id or not team_id or not schema_name:
             raise JWTError("Missing claims")
     except JWTError:
         await websocket.send_json({"error": "Invalid token"})
         await websocket.close(code=4003)
         return
 
+    from app.database import tenant_schema
+    tenant_schema.set(schema_name)
+
     client_watches[websocket] = set()
     client_streams[websocket] = set()
-    logger.info(f"Client connected: user_id={user_id}")
+    client_ticket_watches[websocket] = set()
+    logger.info(f"Client connected: user_id={user_id} tenant={schema_name}")
 
     try:
         while True:
@@ -105,6 +116,22 @@ async def client_websocket(websocket: WebSocket):
                     server_watchers[server_id].add(websocket)
                     client_watches[websocket].add(server_id)
                     await websocket.send_json({"type": "watched", "server_id": server_id})
+
+            elif msg_type == "subscribe_ticket":
+                ticket_id = data.get("ticket_id")
+                if ticket_id:
+                    if ticket_id not in ticket_watchers:
+                        ticket_watchers[ticket_id] = set()
+                    ticket_watchers[ticket_id].add(websocket)
+                    client_ticket_watches[websocket].add(ticket_id)
+                    await websocket.send_json({"type": "subscribed_ticket", "ticket_id": ticket_id})
+
+            elif msg_type == "unsubscribe_ticket":
+                ticket_id = data.get("ticket_id")
+                if ticket_id and ticket_id in ticket_watchers:
+                    ticket_watchers[ticket_id].discard(websocket)
+                    client_ticket_watches[websocket].discard(ticket_id)
+                    await websocket.send_json({"type": "unsubscribed_ticket", "ticket_id": ticket_id})
 
             elif msg_type == "unwatch":
                 server_id = data.get("server_id")
@@ -242,6 +269,14 @@ async def client_websocket(websocket: WebSocket):
                 if not server_watchers[sid]:
                     del server_watchers[sid]
 
+        # Clean up ticket watchers
+        ticket_watched = client_ticket_watches.pop(websocket, set())
+        for tid in ticket_watched:
+            if tid in ticket_watchers:
+                ticket_watchers[tid].discard(websocket)
+                if not ticket_watchers[tid]:
+                    del ticket_watchers[tid]
+
         # Clean up stream subscriptions (terminal sessions, log streams)
         streams = client_streams.pop(websocket, set())
         for stream_id in streams:
@@ -276,3 +311,17 @@ async def forward_to_stream(stream_id: str, message: dict) -> bool:
     except Exception:
         stream_subscribers.pop(stream_id, None)
         return False
+
+
+async def forward_to_ticket_watchers(ticket_id: str, message: dict):
+    """Forward a message to all browser clients watching a ticket."""
+    watchers = ticket_watchers.get(ticket_id, set())
+    disconnected = set()
+    for ws in watchers:
+        try:
+            await ws.send_json(message)
+        except Exception:
+            disconnected.add(ws)
+    # Clean up disconnected
+    for ws in disconnected:
+        watchers.discard(ws)

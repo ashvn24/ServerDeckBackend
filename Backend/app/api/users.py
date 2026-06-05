@@ -1,12 +1,12 @@
 import secrets
 import datetime
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from passlib.hash import bcrypt
 
 from app.database import get_db
-from app.middleware.auth import get_current_user, require_admin, require_owner
+from app.middleware.auth import get_current_user, require_admin, require_owner, require_support
 from app.models.user import User, UserInvite
 from app.schemas.user import UserInviteCreate, UserAcceptInvite, UserManagementResponse, UserDirectCreate
 
@@ -14,17 +14,19 @@ router = APIRouter(prefix="/api/users", tags=["users"])
 
 @router.get("/", response_model=list[UserManagementResponse])
 async def list_users(
-    admin: User = Depends(require_admin),
+    user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     result = await db.execute(
-        select(User).where(User.team_id == admin.team_id).order_by(User.created_at.desc())
+        select(User).where(User.team_id == user.team_id).order_by(User.created_at.desc())
     )
     return result.scalars().all()
+
 
 @router.post("/invite", status_code=status.HTTP_201_CREATED)
 async def invite_user(
     data: UserInviteCreate,
+    background_tasks: BackgroundTasks,
     admin: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
@@ -34,7 +36,12 @@ async def invite_user(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="User already exists")
 
     # Create invite
-    token = secrets.token_urlsafe(32)
+    from app.services.tenant import get_org_key_from_email
+    org_key = get_org_key_from_email(admin.email)
+    if not org_key:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Could not determine organization from admin email")
+        
+    token = f"{secrets.token_urlsafe(32)}:{org_key}"
     expires_at = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=7)
     
     invite = UserInvite(
@@ -47,8 +54,21 @@ async def invite_user(
     db.add(invite)
     await db.commit()
 
-    # Log the invite link (in a real app, this would send an email)
-    invite_url = f"/invite?token={token}"
+    # Send the invite email asynchronously
+    from app.config import get_settings
+    from app.services.email_service import send_invitation_email
+    
+    settings = get_settings()
+    invite_url = f"{settings.ui_base_url}/invite?token={token}"
+    
+    background_tasks.add_task(
+        send_invitation_email,
+        to_email=data.email,
+        inviter_name=admin.name,
+        invite_link=invite_url,
+        org_name=org_key.capitalize()
+    )
+    
     print(f"INVITATION CREATED: {data.email} ({data.role}) -> {invite_url}")
 
     return {"message": "Invitation sent", "token": token}
