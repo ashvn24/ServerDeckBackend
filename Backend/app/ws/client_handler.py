@@ -159,6 +159,13 @@ async def client_websocket(websocket: WebSocket):
                         timeout=30,
                     )
                     await websocket.send_json(result)
+                    
+                    if action:
+                        from app.database import tenant_session
+                        async with tenant_session() as session:
+                            await record_audit(session, user_id, server_id, action, params)
+                            await session.commit()
+
                 except TimeoutError:
                     if action == "logs.stream":
                         _unsubscribe_stream(cmd_id)
@@ -199,6 +206,12 @@ async def client_websocket(websocket: WebSocket):
                     )
                     result.setdefault("type", "terminal_opened")
                     await websocket.send_json(result)
+
+                    from app.database import tenant_session
+                    async with tenant_session() as session:
+                        await record_audit(session, user_id, server_id, "terminal.open", {"shell": shell})
+                        await session.commit()
+
                 except Exception as e:
                     _unsubscribe_stream(cmd_id)
                     await websocket.send_json({
