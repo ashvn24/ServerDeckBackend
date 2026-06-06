@@ -10,6 +10,7 @@ from app.database import get_db
 from app.models.user import User, Team
 from app.models.organization import Organization, PlatformUser
 from app.schemas.user import UserCreate, UserLogin, TokenResponse, UserResponse, PlatformUserResponse
+from app.services.audit import record_audit
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
@@ -110,6 +111,8 @@ async def register(data: UserCreate, background_tasks: BackgroundTasks, db: Asyn
     db.add(user)
     await db.flush()
 
+    await record_audit(db, user.id, None, "auth.register", details={"email": data.email})
+
     token = create_access_token(user, schema_name)
     
     # Send welcome email asynchronously
@@ -170,6 +173,8 @@ async def login(data: UserLogin, db: AsyncSession = Depends(get_db)):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid email or password")
     if not user.is_active:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Account disabled")
+
+    await record_audit(db, user.id, None, "auth.login", details={"email": data.email})
 
     token = create_access_token(user, schema_name)
     return TokenResponse(

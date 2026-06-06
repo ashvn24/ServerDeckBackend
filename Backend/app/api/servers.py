@@ -52,6 +52,7 @@ async def create_server(
         schema_name=current_schema
     )
     db.add(token_mapping)
+    await record_audit(db, user.id, server.id, "server.create", details={"name": server.name})
     await db.commit()
     
     await db.refresh(server)
