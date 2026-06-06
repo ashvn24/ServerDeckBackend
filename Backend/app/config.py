@@ -4,34 +4,28 @@ from functools import lru_cache
 
 class Settings(BaseSettings):
     # Database
-    database_url: str = "postgresql+asyncpg://postgres:T3ch$upp0rt!!@localhost:5432/serverdeck"
+    database_url: str
 
     # JWT
-    jwt_secret: str = "change-me-in-production-use-a-real-secret-key"
-    jwt_algorithm: str = "HS256"
-    jwt_expire_hours: int = 24
+    jwt_secret: str
+    jwt_algorithm: str
+    jwt_expire_hours: int
 
     # CORS
-    cors_origins: list[str] = [
-        "http://localhost:5173", 
-        "http://localhost:3000", 
-        "https://serverdeck.dynamiqqr.com", 
-        "https://server-deck-frontend.vercel.app"
-    ]
+    cors_origins: list[str]
 
     # App
-    app_name: str = "ServerDeck"
-    portal_base_url: str = "https://serverdeck.dynamiqqr.com"
-
-    ui_base_url: str = "https://server-deck-frontend.vercel.app"
+    app_name: str
+    portal_base_url: str
+    ui_base_url: str
 
     # SMTP Configuration
-    smtp_server: str = "smtp.gmail.com"
-    smtp_port: int = 587
-    smtp_username: str = "ashwinvk77@gmail.com"
-    smtp_password: str = "ienf eubn qyag ntuf"
-    smtp_from_email: str = "ashwinvk77@gmail.com"
-    smtp_from_name: str = "ServerDeck"
+    smtp_server: str
+    smtp_port: int
+    smtp_username: str
+    smtp_password: str
+    smtp_from_email: str
+    smtp_from_name: str
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 
