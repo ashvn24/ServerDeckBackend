@@ -8,9 +8,8 @@ from alembic.config import Config
 from alembic import command
 
 from app.config import get_settings
-from app.api import auth, servers, sites, dashboard, logs, agent_dist, users, folders, audit, admin, tickets
-from app.ws import agent_handler, client_handler
 from app.services.alerting import check_alerts
+from app.api.base import app as api_app
 
 settings = get_settings()
 
@@ -56,6 +55,8 @@ app = FastAPI(
     dependencies=[Depends(resolve_tenant)]
 )
 
+app.include_router(api_app)
+
 # CORS
 app.add_middleware(
     CORSMiddleware,
@@ -65,22 +66,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# REST API routers
-app.include_router(auth.router)
-app.include_router(servers.router)
-app.include_router(sites.router)
-app.include_router(dashboard.router)
-app.include_router(logs.router)
-app.include_router(agent_dist.router)
-app.include_router(users.router)
-app.include_router(folders.router)
-app.include_router(audit.router)
-app.include_router(admin.router)
-app.include_router(tickets.router)
 
-# WebSocket routers
-app.include_router(agent_handler.router)
-app.include_router(client_handler.router)
 
 
 @app.get("/api/health")
