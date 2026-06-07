@@ -86,7 +86,7 @@ Return only the JSON. No preamble.
 """
         
         # 4. Call Grok API
-        api_key = os.environ.get("GROK_API_KEY")
+        api_key = settings.grok_api_key
         if not api_key:
             raise ValueError("GROK_API_KEY environment variable not set")
             
