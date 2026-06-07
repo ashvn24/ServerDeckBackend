@@ -85,17 +85,17 @@ Respond in this exact JSON format:
 Return only the JSON. No preamble.
 """
         
-        # 4. Call Grok API
+        # 4. Call Groq API
         api_key = settings.grok_api_key
         if not api_key:
             raise ValueError("GROK_API_KEY environment variable not set")
-            
+
         async with httpx.AsyncClient() as client:
             resp = await client.post(
-                "https://api.x.ai/v1/chat/completions",
+                "https://api.groq.com/openai/v1/chat/completions",
                 headers={"Authorization": f"Bearer {api_key}"},
                 json={
-                    "model": "grok-3-mini",
+                    "model": "llama-3.3-70b-versatile",
                     "messages": [
                         {"role": "user", "content": prompt}
                     ],
