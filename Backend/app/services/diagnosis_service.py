@@ -1,3 +1,4 @@
+from app.models.alerting import AlertRecord
 import logging
 import json
 import os
@@ -97,64 +98,64 @@ Respond in this exact JSON format:
 Return only the JSON. No preamble.
 """
         
-        # 4. Call Groq API
-        api_key = settings.grok_api_key
-        if not api_key:
-            raise ValueError("GROK_API_KEY environment variable not set")
+            # 4. Call Groq API
+            api_key = settings.grok_api_key
+            if not api_key:
+                raise ValueError("GROK_API_KEY environment variable not set")
 
-        async with httpx.AsyncClient() as client:
-            resp = await client.post(
-                "https://api.groq.com/openai/v1/chat/completions",
-                headers={"Authorization": f"Bearer {api_key}"},
-                json={
-                    "model": "llama-3.3-70b-versatile",
-                    "messages": [
-                        {"role": "user", "content": prompt}
-                    ],
-                    "response_format": {"type": "json_object"}
-                },
-                timeout=45.0
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            content = data["choices"][0]["message"]["content"]
-            
-            # Robust JSON parsing in case the model returns markdown backticks
-            clean_content = content.strip()
-            if clean_content.startswith("```json"):
-                clean_content = clean_content[7:]
-            if clean_content.startswith("```"):
-                clean_content = clean_content[3:]
-            if clean_content.endswith("```"):
-                clean_content = clean_content[:-3]
+            async with httpx.AsyncClient() as client:
+                resp = await client.post(
+                    "https://api.groq.com/openai/v1/chat/completions",
+                    headers={"Authorization": f"Bearer {api_key}"},
+                    json={
+                        "model": "llama-3.3-70b-versatile",
+                        "messages": [
+                            {"role": "user", "content": prompt}
+                        ],
+                        "response_format": {"type": "json_object"}
+                    },
+                    timeout=45.0
+                )
+                resp.raise_for_status()
+                data = resp.json()
+                content = data["choices"][0]["message"]["content"]
                 
-            result = json.loads(clean_content.strip())
-            
-            # 5. Update success
-            diagnosis.explanation = result.get("explanation")
-            diagnosis.suggested_fix = result.get("suggested_fix")
-            diagnosis.suggested_command = result.get("suggested_command")
-            
-            urgency_str = result.get("urgency", "medium").lower()
-            if urgency_str in [e.value for e in AlertUrgency]:
-                diagnosis.urgency = AlertUrgency(urgency_str)
-            else:
-                diagnosis.urgency = AlertUrgency.medium
+                # Robust JSON parsing in case the model returns markdown backticks
+                clean_content = content.strip()
+                if clean_content.startswith("```json"):
+                    clean_content = clean_content[7:]
+                if clean_content.startswith("```"):
+                    clean_content = clean_content[3:]
+                if clean_content.endswith("```"):
+                    clean_content = clean_content[:-3]
+                    
+                result = json.loads(clean_content.strip())
                 
-            diagnosis.completed_at = datetime.now(timezone.utc)
-            await tenant_db.commit()
-            
-            # Broadcast update
-            await forward_to_watchers(str(server.id), {
-                "type": "alert_diagnosis_ready",
-                "data": {
-                    "alert_id": str(alert_record_id),
-                    "explanation": diagnosis.explanation,
-                    "suggested_fix": diagnosis.suggested_fix,
-                    "suggested_command": diagnosis.suggested_command,
-                    "urgency": urgency_str
-                }
-            })
+                # 5. Update success
+                diagnosis.explanation = result.get("explanation")
+                diagnosis.suggested_fix = result.get("suggested_fix")
+                diagnosis.suggested_command = result.get("suggested_command")
+                
+                urgency_str = result.get("urgency", "medium").lower()
+                if urgency_str in [e.value for e in AlertUrgency]:
+                    diagnosis.urgency = AlertUrgency(urgency_str)
+                else:
+                    diagnosis.urgency = AlertUrgency.medium
+                    
+                diagnosis.completed_at = datetime.now(timezone.utc)
+                await tenant_db.commit()
+                
+                # Broadcast update
+                await forward_to_watchers(str(server.id), {
+                    "type": "alert_diagnosis_ready",
+                    "data": {
+                        "alert_id": str(alert_record_id),
+                        "explanation": diagnosis.explanation,
+                        "suggested_fix": diagnosis.suggested_fix,
+                        "suggested_command": diagnosis.suggested_command,
+                        "urgency": urgency_str
+                    }
+                })
             
         except Exception as e:
             logger.error(f"Diagnosis failed for alert {alert_record_id}: {e}")
