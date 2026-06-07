@@ -118,8 +118,7 @@ async def check_alerts():
                                         run_diagnosis(
                                             alert_record_id=new_alert.id,
                                             server_id=server.id,
-                                            rule=rule,
-                                            tenant_db=db,
+                                            schema_name=schema_name,
                                             metric_value=metric_val
                                         )
                                     )
