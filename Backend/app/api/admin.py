@@ -16,8 +16,9 @@ from app.config import get_settings
 from app.database import get_db
 from app.models.organization import Organization, PlatformUser
 from app.models.user import User, Team, UserInvite
+from app.models.ticket import Ticket, TicketMessage
 from app.schemas.user import OrgCreate, OrgResponse, PlatformUserResponse, TokenResponse, IndividualUserCreate, IndividualUserResponse, IndividualUserInviteResponse
-
+from app.schemas.ticket import TicketResponse, TicketDetailResponse, TicketUpdate, TicketMessageCreate, TicketMessageResponse
 router = APIRouter(prefix="/api/admin", tags=["admin"])
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 settings = get_settings()
@@ -348,3 +349,153 @@ async def delete_individual_user(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Server error: {str(exc)}"
         )
+
+
+# ── Tickets (Individual Users) ─────────────────────
+
+@router.get("/tickets", response_model=list[TicketResponse])
+async def list_individual_tickets(
+    _: PlatformUser = Depends(require_platform_owner),
+    db: AsyncSession = Depends(get_db),
+):
+    """List all tickets from individual users (tenant_individual)."""
+    from app.services.tenant import INDIVIDUAL_SCHEMA, ensure_individual_schema_exists
+    from sqlalchemy.orm import selectinload
+    
+    try:
+        await ensure_individual_schema_exists(db)
+        await db.execute(text(f"SET search_path TO {INDIVIDUAL_SCHEMA}, public"))
+        
+        query = select(Ticket).options(
+            selectinload(Ticket.created_by),
+            selectinload(Ticket.assigned_to)
+        ).order_by(Ticket.updated_at.desc())
+        
+        result = await db.execute(query)
+        return result.scalars().all()
+    except Exception as exc:
+        logger.error(f"[admin/tickets] Error listing tickets: {exc}\n{traceback.format_exc()}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc))
+
+
+@router.get("/tickets/{ticket_id}", response_model=TicketDetailResponse)
+async def get_individual_ticket(
+    ticket_id: str,
+    _: PlatformUser = Depends(require_platform_owner),
+    db: AsyncSession = Depends(get_db),
+):
+    """Get ticket details from tenant_individual."""
+    from app.services.tenant import INDIVIDUAL_SCHEMA
+    from sqlalchemy.orm import selectinload
+    
+    await db.execute(text(f"SET search_path TO {INDIVIDUAL_SCHEMA}, public"))
+    
+    result = await db.execute(
+        select(Ticket)
+        .where(Ticket.id == ticket_id)
+        .options(
+            selectinload(Ticket.created_by),
+            selectinload(Ticket.assigned_to),
+            selectinload(Ticket.messages).selectinload(TicketMessage.sender)
+        )
+    )
+    ticket = result.scalar_one_or_none()
+    if not ticket:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Ticket not found")
+        
+    ticket.messages = sorted(ticket.messages, key=lambda m: m.created_at)
+    return ticket
+
+
+@router.patch("/tickets/{ticket_id}", response_model=TicketResponse)
+async def update_individual_ticket(
+    ticket_id: str,
+    data: TicketUpdate,
+    _: PlatformUser = Depends(require_platform_owner),
+    db: AsyncSession = Depends(get_db),
+):
+    """Update a ticket from tenant_individual (status only)."""
+    from app.services.tenant import INDIVIDUAL_SCHEMA
+    from sqlalchemy.orm import selectinload
+    import datetime
+    
+    await db.execute(text(f"SET search_path TO {INDIVIDUAL_SCHEMA}, public"))
+    
+    result = await db.execute(
+        select(Ticket)
+        .where(Ticket.id == ticket_id)
+        .options(selectinload(Ticket.created_by), selectinload(Ticket.assigned_to))
+    )
+    ticket = result.scalar_one_or_none()
+    if not ticket:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Ticket not found")
+
+    if data.status is not None:
+        ticket.status = data.status
+        
+    if data.priority is not None:
+        ticket.priority = data.priority
+
+    ticket.updated_at = datetime.datetime.now(datetime.timezone.utc)
+    await db.flush()
+
+    # Broadcast update to watchers
+    from app.ws.client_handler import forward_to_ticket_watchers
+    ticket_response = TicketResponse.model_validate(ticket)
+    await forward_to_ticket_watchers(
+        str(ticket.id),
+        {"type": "ticket_update", "ticket": ticket_response.model_dump(mode="json")}
+    )
+
+    await db.commit()
+    return ticket
+
+
+@router.post("/tickets/{ticket_id}/messages", response_model=TicketMessageResponse, status_code=status.HTTP_201_CREATED)
+async def add_individual_ticket_message(
+    ticket_id: str,
+    data: TicketMessageCreate,
+    _: PlatformUser = Depends(require_platform_owner),
+    db: AsyncSession = Depends(get_db),
+):
+    """Add a message to a ticket from tenant_individual as the platform admin."""
+    from app.services.tenant import INDIVIDUAL_SCHEMA
+    from sqlalchemy.orm import selectinload
+    import datetime
+    
+    await db.execute(text(f"SET search_path TO {INDIVIDUAL_SCHEMA}, public"))
+    
+    result = await db.execute(select(Ticket).where(Ticket.id == ticket_id))
+    ticket = result.scalar_one_or_none()
+    if not ticket:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Ticket not found")
+        
+    message = TicketMessage(
+        ticket_id=ticket.id,
+        sender_id=None,  # None implies Platform Owner / System
+        body=data.body,
+        is_internal=data.is_internal,
+    )
+    db.add(message)
+    
+    ticket.updated_at = datetime.datetime.now(datetime.timezone.utc)
+    await db.flush()
+    
+    # Load for response (sender will be None, which is handled gracefully by frontend)
+    result_msg = await db.execute(
+        select(TicketMessage)
+        .where(TicketMessage.id == message.id)
+        .options(selectinload(TicketMessage.sender))
+    )
+    db_message = result_msg.scalar_one()
+    
+    # Broadcast to watchers
+    from app.ws.client_handler import forward_to_ticket_watchers
+    msg_response = TicketMessageResponse.model_validate(db_message)
+    await forward_to_ticket_watchers(
+        str(ticket.id),
+        {"type": "ticket_message", "message": msg_response.model_dump(mode="json")}
+    )
+    
+    await db.commit()
+    return db_message
