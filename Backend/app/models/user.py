@@ -17,6 +17,8 @@ class Team(Base):
     users: Mapped[list["User"]] = relationship("User", back_populates="team", cascade="all, delete-orphan")
     servers: Mapped[list["Server"]] = relationship("Server", back_populates="team", cascade="all, delete-orphan")
     folders: Mapped[list["ServerFolder"]] = relationship("ServerFolder", back_populates="team", cascade="all, delete-orphan")
+    invites: Mapped[list["UserInvite"]] = relationship("UserInvite", back_populates="team", cascade="all, delete-orphan")
+    tickets: Mapped[list["Ticket"]] = relationship("Ticket", back_populates="team", cascade="all, delete-orphan")
 
 
 class User(Base):
@@ -33,7 +35,7 @@ class User(Base):
 
     # Relationships
     team: Mapped["Team"] = relationship("Team", back_populates="users")
-    audit_logs: Mapped[list["AuditLog"]] = relationship("AuditLog", back_populates="user")
+    audit_logs: Mapped[list["AuditLog"]] = relationship("AuditLog", back_populates="user", cascade="all, delete-orphan")
 
 
 class UserInvite(Base):
@@ -47,7 +49,11 @@ class UserInvite(Base):
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
+    # Relationships
+    team: Mapped["Team"] = relationship("Team", back_populates="invites")
+
 
 # Avoid circular import — import Server at module level for relationship resolution
 from app.models.server import Server  # noqa: E402, F401
 from app.models.audit import AuditLog  # noqa: E402, F401
+from app.models.ticket import Ticket  # noqa: E402, F401

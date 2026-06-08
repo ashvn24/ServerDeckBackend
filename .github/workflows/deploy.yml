@@ -26,6 +26,21 @@ jobs:
             systemctl restart serverdeckapi.service
             systemctl reload nginx
 
+      - name: Verify Health Check
+        run: |
+          echo "Waiting 5 seconds for service to restart..."
+          sleep 5
+          echo "Checking /api/health..."
+          RESPONSE=$(curl -s -X 'GET' 'https://api.serverdeck.online/api/health' -H 'accept: application/json')
+          echo "Response: $RESPONSE"
+          
+          if echo "$RESPONSE" | grep -q '"status": "ok"' && echo "$RESPONSE" | grep -q '"service": "serverdeck-api"'; then
+            echo "Health check passed!"
+          else
+            echo "Health check failed! Expected status=ok and service=serverdeck-api"
+            exit 1
+          fi
+
       - name: Send Success Email
         if: success()
         uses: dawidd6/action-send-mail@v3
