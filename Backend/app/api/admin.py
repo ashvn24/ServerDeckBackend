@@ -528,11 +528,11 @@ async def delete_waitlist(
     await db.commit()
 
 
-@router.post("/waitlist/{request_id}/approve", response_model=IndividualUserResponse)
+@router.post("/waitlist/{request_id}/approve", response_model=IndividualUserInviteResponse)
 async def approve_waitlist(
     request_id: str,
     background_tasks: BackgroundTasks,
-    _: PlatformUser = Depends(require_platform_owner),
+    platform_user: PlatformUser = Depends(require_platform_owner),
     db: AsyncSession = Depends(get_db)
 ):
     """Approve a waitlist request by creating an individual user account and sending an invite."""
@@ -544,10 +544,9 @@ async def approve_waitlist(
     email = req.email
     name = email.split("@")[0].title()
 
-    # Create the user using the same logic as create_individual_user
     from app.services.tenant import INDIVIDUAL_SCHEMA, ensure_individual_schema_exists
-    from app.services.email_service import send_org_creation_email
     import datetime
+    import secrets
 
     await ensure_individual_schema_exists(db)
     await db.execute(text(f"SET search_path TO {INDIVIDUAL_SCHEMA}, public"))
@@ -556,25 +555,18 @@ async def approve_waitlist(
     if user_result.scalar_one_or_none():
         raise HTTPException(status_code=400, detail="User already exists")
 
+    # Check for existing invite
+    existing_invite = await db.execute(select(UserInvite).where(UserInvite.email == email))
+    if existing_invite.scalar_one_or_none():
+        raise HTTPException(status_code=409, detail="Invite already sent to this email")
+
     # Create their personal Team
     team = Team(name=f"{name}'s Workspace")
     db.add(team)
     await db.flush()
 
-    # Create user with blank password
-    user = User(
-        email=email,
-        password_hash="[invited]",
-        name=name,
-        team_id=team.id,
-        role="owner"
-    )
-    db.add(user)
-    await db.flush()
-
     # Create invite token
-    import secrets
-    token = secrets.token_urlsafe(32)
+    token = f"{secrets.token_urlsafe(32)}:individual"
     invite = UserInvite(
         email=email,
         role="owner",
@@ -584,22 +576,25 @@ async def approve_waitlist(
     )
     db.add(invite)
 
-    await db.flush()
-    user_response = IndividualUserResponse.model_validate(user)
-
     # Delete the waitlist request
     await db.delete(req)
     await db.commit()
 
-    invite_url = f"{settings.frontend_url}/invite/{token}"
+    from app.config import get_settings
+    from app.services.email_service import send_invitation_email
+    settings = get_settings()
+    invite_url = f"{settings.ui_base_url}/invite?token={token}"
 
     background_tasks.add_task(
-        send_org_creation_email,
-        email,
-        name,
-        email,  # individual users don't have a distinct organization name
-        "individual",
-        invite_url,
+        send_invitation_email,
+        to_email=email,
+        inviter_name=platform_user.name,
+        invite_link=invite_url,
+        org_name="ServerDeck Personal"
     )
 
-    return user_response
+    return IndividualUserInviteResponse(
+        message="Waitlist approved and invitation sent successfully",
+        token=token,
+        invite_url=invite_url
+    )
