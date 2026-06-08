@@ -87,8 +87,13 @@ async def client_websocket(websocket: WebSocket):
         user_id = payload.get("sub")
         team_id = payload.get("team_id")
         schema_name = payload.get("tenant_schema")
-        if not user_id or not team_id or not schema_name:
+        is_platform_owner = payload.get("is_platform_owner", False)
+        
+        if not user_id or not schema_name:
             raise JWTError("Missing claims")
+            
+        if not is_platform_owner and not team_id:
+            raise JWTError("Missing team_id for standard user")
     except JWTError:
         await websocket.send_json({"error": "Invalid token"})
         await websocket.close(code=4003)
