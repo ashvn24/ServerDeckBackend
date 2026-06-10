@@ -49,6 +49,7 @@ class Server(Base):
     pm2_apps: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     systemd_services: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     ssl_certs: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    luxegenie_health: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 

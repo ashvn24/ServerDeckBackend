@@ -198,6 +198,7 @@ async def _handle_scan(server_id: str, data: dict):
                 pm2_apps=data.get("pm2_apps"),
                 systemd_services=data.get("systemd_services"),
                 ssl_certs=data.get("ssl_certs"),
+                luxegenie_health=data.get("luxegenie_health"),
                 last_seen=datetime.now(timezone.utc),
             )
         )

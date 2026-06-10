@@ -237,9 +237,17 @@ async def scan_ssl_certs() -> list:
 
 async def get_scan_data() -> dict:
     """Collect all service scan data."""
+    try:
+        from serverdeck_agent.handlers.luxegenie_health import _collect_all_vitals
+        luxegenie_data = _collect_all_vitals()
+    except Exception as e:
+        logger.error(f"Error collecting LuxeGenie health: {e}")
+        luxegenie_data = None
+
     return {
         "nginx_sites": await scan_nginx_sites(),
         "pm2_apps": await scan_pm2_apps(),
         "systemd_services": await scan_systemd_services(),
         "ssl_certs": await scan_ssl_certs(),
+        "luxegenie_health": luxegenie_data,
     }

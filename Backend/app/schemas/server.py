@@ -43,6 +43,7 @@ class ServerResponse(BaseModel):
     pm2_apps: Any | None = None
     systemd_services: Any | None = None
     ssl_certs: Any | None = None
+    luxegenie_health: Any | None = None
     created_at: datetime
 
     model_config = {"from_attributes": True}
