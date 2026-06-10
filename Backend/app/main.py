@@ -34,7 +34,12 @@ async def run_migrations():
         command.upgrade(alembic_cfg, "head")
 
     # Migrate public schema
-    await asyncio.to_thread(_run_public)
+    try:
+        await asyncio.to_thread(_run_public)
+    except Exception as e:
+        logger.error(f"Failed to migrate public schema: {e}")
+        traceback.print_exc()
+        raise e
 
     # Migrate all tenant schemas
     try:
@@ -46,6 +51,7 @@ async def run_migrations():
                     await asyncio.to_thread(run_tenant_migrations, schema_name)
                 except Exception as e:
                     logger.error(f"Failed to migrate tenant {schema_name}: {e}")
+                    traceback.print_exc()
     except Exception as e:
         logger.error(f"Failed to fetch organizations for migration: {e}")
         traceback.print_exc()
@@ -74,7 +80,7 @@ app = FastAPI(
     title="ServerDeck API",
     description="Lightweight agent-based Linux server management platform",
     version="0.1.0",
-    lifespan=lifespan,
+    # lifespan=lifespan,
     dependencies=[Depends(resolve_tenant)]
 )
 
