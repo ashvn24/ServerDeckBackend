@@ -80,7 +80,7 @@ app = FastAPI(
     title="ServerDeck API",
     description="Lightweight agent-based Linux server management platform",
     version="0.1.0",
-    lifespan=lifespan,
+    # lifespan=lifespan,
     dependencies=[Depends(resolve_tenant)]
 )
 
