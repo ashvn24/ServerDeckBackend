@@ -9,7 +9,7 @@ import sys
 
 from serverdeck_agent.config import load_config
 from serverdeck_agent.connection import AgentConnection
-from serverdeck_agent.handlers import nginx, systemd, pm2, ssl, logs, firewall, process, agent, files, automation
+from serverdeck_agent.handlers import nginx, systemd, pm2, ssl, logs, firewall, process, agent, files, automation, luxegenie_health
 
 logging.basicConfig(
     level=logging.INFO,
@@ -73,6 +73,12 @@ HANDLERS = {
     "agent.uninstall": agent.handle_uninstall,
     # Automation
     "automation.run": automation.handle_run_script,
+    # LuxeGenie Device Health
+    "luxegenie.health": luxegenie_health.handle_health,
+    "luxegenie.battery": luxegenie_health.handle_battery,
+    "luxegenie.serial": luxegenie_health.handle_serial,
+    "luxegenie.firmware": luxegenie_health.handle_firmware,
+    "luxegenie.network": luxegenie_health.handle_network,
 }
 
 # Allowlist of valid actions (security: reject unknown commands)
