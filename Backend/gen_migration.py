@@ -117,14 +117,13 @@ def main():
             generated += generate(cfg, message, tenant=False, tenant_schema=args.tenant_schema)
 
         if args.scope in ("tenant", "all"):
-            if args.scope == "all" and generated:
-                # The public revision moved the head, so autogenerate against the
-                # tenant schema would refuse with "target database is not up to
-                # date". Replay the chain on the reference schema first — the new
-                # public revision is a guarded no-op there, it only stamps head.
-                print(f"Upgrading {args.tenant_schema} to the new head...")
-                set_scope_env(tenant=True, tenant_schema=args.tenant_schema)
-                command.upgrade(cfg, "head")
+            # Autogenerate refuses to run unless the reference schema is at
+            # head — it lags whenever revisions (including one generated just
+            # above for public, which is a guarded no-op for tenants) haven't
+            # been applied to it yet. Replay the chain on it first.
+            print(f"Upgrading {args.tenant_schema} to head...")
+            set_scope_env(tenant=True, tenant_schema=args.tenant_schema)
+            command.upgrade(cfg, "head")
             message = f"{args.message} (tenant)" if args.scope == "all" else args.message
             generated += generate(cfg, message, tenant=True, tenant_schema=args.tenant_schema)
     except CommandError as exc:
