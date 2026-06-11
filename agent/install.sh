@@ -89,7 +89,7 @@ source "$INSTALL_DIR/venv/bin/activate"
 
 # Step 5: Install Python dependencies
 echo -e "${YELLOW}[5/7] Installing Python dependencies...${NC}"
-pip install --quiet websockets psutil
+pip install --quiet websockets psutil pyserial
 
 # Step 5b: Compile to bytecode and strip source.
 # The downloaded .py files are only a build input — compile them to sourceless
