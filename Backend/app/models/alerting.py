@@ -43,7 +43,7 @@ class AlertRule(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
     # Relationships
-    server = relationship("Server", backref="alert_rules")
+    server = relationship("Server", back_populates="alert_rules")
     records = relationship("AlertRecord", back_populates="rule", cascade="all, delete-orphan")
 
 
@@ -61,7 +61,7 @@ class AlertRecord(Base):
 
     # Relationships
     rule = relationship("AlertRule", back_populates="records")
-    server = relationship("Server", backref="alert_records")
+    server = relationship("Server", back_populates="alert_records")
     diagnosis = relationship("AlertDiagnosis", uselist=False, back_populates="alert_record", cascade="all, delete-orphan")
 
 

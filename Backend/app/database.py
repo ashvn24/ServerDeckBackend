@@ -8,7 +8,15 @@ settings = get_settings()
 
 tenant_schema: contextvars.ContextVar[str] = contextvars.ContextVar("tenant_schema")
 
-engine = create_async_engine(settings.database_url, echo=False, pool_pre_ping=True)
+# prepared_statement_cache_size=0: pooled connections switch search_path
+# between tenant schemas, which invalidates asyncpg's cached statement plans
+# for schema-less tables (InvalidCachedStatementError).
+engine = create_async_engine(
+    settings.database_url,
+    echo=False,
+    pool_pre_ping=True,
+    connect_args={"prepared_statement_cache_size": 0},
+)
 async_session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
 

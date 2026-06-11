@@ -60,20 +60,33 @@ async def evaluate_rule(rule: AlertRule, server: Server) -> tuple[bool, float | 
     return False, None
 
 
+# Keep strong references to fire-and-forget diagnosis tasks so they aren't
+# garbage-collected mid-run.
+_diagnosis_tasks: set[asyncio.Task] = set()
+
+
 async def check_alerts():
     """Run alert checks on all servers across all tenants."""
     while True:
+        # Discover tenant schemas from the database itself so individual users
+        # (tenant_individual) and schemas missing from the organizations table
+        # are covered too.
+        schemas = []
         try:
-            # Get all tenant schemas
-            org_keys = []
             async with async_session_factory() as root_db:
-                res = await root_db.execute(text("SELECT org_key FROM organizations"))
-                org_keys = res.scalars().all()
-                
-            for key in org_keys:
-                schema_name = f"tenant_{key}"
+                res = await root_db.execute(text(
+                    "SELECT schema_name FROM information_schema.schemata "
+                    "WHERE schema_name LIKE 'tenant\\_%'"
+                ))
+                schemas = res.scalars().all()
+        except Exception as e:
+            logger.error(f"Alert service: failed to list tenant schemas: {e}")
+
+        for schema_name in schemas:
+            # One broken tenant must not stop checks for the rest.
+            try:
                 tenant_schema.set(schema_name)
-                
+
                 async with tenant_session() as db:
                     # Query servers that have enabled alert rules
                     result = await db.execute(
@@ -114,7 +127,7 @@ async def check_alerts():
                                     await db.refresh(new_alert)
                                     
                                     # Trigger AI diagnosis in background
-                                    asyncio.create_task(
+                                    task = asyncio.create_task(
                                         run_diagnosis(
                                             alert_record_id=new_alert.id,
                                             server_id=server.id,
@@ -122,6 +135,8 @@ async def check_alerts():
                                             metric_value=metric_val
                                         )
                                     )
+                                    _diagnosis_tasks.add(task)
+                                    task.add_done_callback(_diagnosis_tasks.discard)
                                     
                                     # Broadcast alert
                                     await forward_to_watchers(str(server.id), {
@@ -142,7 +157,7 @@ async def check_alerts():
                                     active_record.resolved_at = datetime.now(timezone.utc)
                                     await db.commit()
                                     
-        except Exception as e:
-            logger.error(f"Alert service error: {e}")
-            
+            except Exception as e:
+                logger.error(f"Alert service error in {schema_name}: {e}")
+
         await asyncio.sleep(60)
