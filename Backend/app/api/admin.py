@@ -370,6 +370,30 @@ async def delete_individual_user(
         )
 
 
+@router.patch("/users/{user_id}/modules", response_model=IndividualUserResponse)
+async def update_individual_user_modules(
+    user_id: str,
+    data: OrgModulesUpdate,
+    _: PlatformUser = Depends(require_platform_owner),
+    db: AsyncSession = Depends(get_db),
+):
+    """Update enabled modules list for an individual user in the shared tenant_individual schema."""
+    from app.services.tenant import INDIVIDUAL_SCHEMA
+    import uuid
+    target_uuid = uuid.UUID(user_id)
+    
+    await db.execute(text(f"SET search_path TO {INDIVIDUAL_SCHEMA}, public"))
+    result = await db.execute(select(User).where(User.id == target_uuid))
+    target_user = result.scalar_one_or_none()
+    if not target_user:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+        
+    target_user.enabled_modules = data.enabled_modules
+    await db.commit()
+    await db.refresh(target_user)
+    return target_user
+
+
 # ── Tickets (Individual Users) ─────────────────────
 
 @router.get("/tickets", response_model=list[TicketResponse])

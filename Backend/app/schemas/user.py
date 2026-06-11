@@ -122,6 +122,7 @@ class IndividualUserResponse(BaseModel):
     name: str
     email: str
     team_id: UUID
+    enabled_modules: list[str] | None = None
     created_at: datetime.datetime
 
     model_config = {"from_attributes": True}
