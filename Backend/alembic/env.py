@@ -6,7 +6,7 @@ import asyncio
 
 # Import all models so Alembic can detect them
 from app.database import Base
-from app.models import User, Team, Server, ServerFolder, Site, AuditLog, Ticket, TicketMessage  # noqa: F401
+import app.models  # noqa: F401  # registers every model on Base.metadata
 
 import os
 from app.config import get_settings
@@ -35,6 +35,14 @@ def include_object(object, name, type_, reflected, compare_to):
     return True
 
 
+def process_revision_directives(context, revision, directives):
+    # gen_migration.py sets this flag so a scope with no model changes doesn't
+    # produce an empty revision file; plain `alembic revision` is unaffected.
+    if config.attributes.get("skip_empty_autogenerate") and directives:
+        if directives[0].upgrade_ops.is_empty():
+            directives[:] = []
+
+
 def run_migrations_offline() -> None:
     url = config.get_main_option("sqlalchemy.url")
     context.configure(
@@ -50,9 +58,10 @@ def run_migrations_offline() -> None:
 
 def do_run_migrations(connection):
     context.configure(
-        connection=connection, 
+        connection=connection,
         target_metadata=target_metadata,
         include_object=include_object,
+        process_revision_directives=process_revision_directives,
     )
     with context.begin_transaction():
         context.run_migrations()
