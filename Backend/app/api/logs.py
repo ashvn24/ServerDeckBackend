@@ -27,6 +27,13 @@ async def fetch_logs(
     if not server:
         raise HTTPException(status_code=404, detail="Server not found")
 
+    from app.database import tenant_schema
+    from app.services.tenant import get_user_resolved_modules
+    schema_name = tenant_schema.get(None)
+    resolved = await get_user_resolved_modules(db, user, schema_name)
+    if source in ("nginx", "pm2", "systemd") and source not in resolved:
+        raise HTTPException(status_code=403, detail=f"Module '{source}' is disabled for your account.")
+
     response = await execute_on_server(
         server=server,
         action="logs.fetch",

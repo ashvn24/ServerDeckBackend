@@ -8,7 +8,7 @@ from passlib.hash import bcrypt
 from app.database import get_db
 from app.middleware.auth import get_current_user, require_admin, require_owner, require_support
 from app.models.user import User, UserInvite
-from app.schemas.user import UserInviteCreate, UserAcceptInvite, UserManagementResponse, UserDirectCreate
+from app.schemas.user import UserInviteCreate, UserAcceptInvite, UserManagementResponse, UserDirectCreate, UserResponse, UserModulesUpdate
 
 router = APIRouter(prefix="/api/users", tags=["users"])
 
@@ -20,7 +20,77 @@ async def list_users(
     result = await db.execute(
         select(User).where(User.team_id == user.team_id).order_by(User.created_at.desc())
     )
-    return result.scalars().all()
+    users = result.scalars().all()
+
+    from app.database import tenant_schema
+    from app.services.tenant import get_user_resolved_modules
+    schema_name = tenant_schema.get(None)
+
+    response_users = []
+    for u in users:
+        resolved = await get_user_resolved_modules(db, u, schema_name)
+        user_data = UserManagementResponse.model_validate(u)
+        user_data.enabled_modules = resolved
+        user_data.custom_modules = u.enabled_modules
+        response_users.append(user_data)
+
+    return response_users
+
+
+@router.get("/me", response_model=UserResponse)
+async def get_my_profile(
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Retrieve details and dynamically resolved modules for the logged in user."""
+    from app.database import tenant_schema
+    from app.services.tenant import get_user_resolved_modules
+    
+    schema_name = tenant_schema.get(None)
+    resolved = await get_user_resolved_modules(db, user, schema_name)
+    
+    resp = UserResponse.model_validate(user)
+    resp.enabled_modules = resolved
+    return resp
+
+
+@router.patch("/{user_id}/modules", response_model=UserManagementResponse)
+async def update_user_modules(
+    user_id: str,
+    data: UserModulesUpdate,
+    admin: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Update custom modules list for a user within the same organization."""
+    import uuid
+    target_uuid = uuid.UUID(user_id)
+    result = await db.execute(
+        select(User).where(User.id == target_uuid, User.team_id == admin.team_id)
+    )
+    target_user = result.scalar_one_or_none()
+    if not target_user:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+
+    if target_user.role == "owner" and admin.role != "owner":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only the team owner can modify owner modules"
+        )
+
+    target_user.enabled_modules = data.enabled_modules
+    await db.commit()
+    await db.refresh(target_user)
+
+    from app.database import tenant_schema
+    from app.services.tenant import get_user_resolved_modules
+    schema_name = tenant_schema.get(None)
+    resolved = await get_user_resolved_modules(db, target_user, schema_name)
+
+    resp = UserManagementResponse.model_validate(target_user)
+    resp.enabled_modules = resolved
+    resp.custom_modules = target_user.enabled_modules
+    return resp
+
 
 
 @router.post("/invite", status_code=status.HTTP_201_CREATED)

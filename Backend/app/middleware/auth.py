@@ -66,3 +66,24 @@ async def require_support(user: User = Depends(get_current_user)) -> User:
             detail="You do not have permission to access support features"
         )
     return user
+
+
+def require_module(module_name: str):
+    """FastAPI dependency to verify if a feature/nav module is enabled for the current user."""
+    async def dependency(
+        user: User = Depends(get_current_user),
+        db: AsyncSession = Depends(get_db),
+    ) -> User:
+        from app.database import tenant_schema
+        from app.services.tenant import get_user_resolved_modules
+        
+        schema_name = tenant_schema.get(None)
+        resolved = await get_user_resolved_modules(db, user, schema_name)
+        if module_name not in resolved:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Module '{module_name}' is disabled for your account/organization."
+            )
+        return user
+    return dependency
+

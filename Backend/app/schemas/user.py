@@ -21,6 +21,7 @@ class UserResponse(BaseModel):
     email: str
     team_id: UUID
     role: str
+    enabled_modules: list[str] | None = None
 
     model_config = {"from_attributes": True}
 
@@ -50,6 +51,8 @@ class UserManagementResponse(BaseModel):
     role: str
     is_active: bool
     created_at: datetime.datetime
+    enabled_modules: list[str] | None = None
+    custom_modules: list[str] | None = None
 
     model_config = {"from_attributes": True}
 
@@ -79,6 +82,7 @@ class OrgCreate(BaseModel):
     admin_name: str
     admin_email: EmailStr
     admin_password: str
+    enabled_modules: list[str] | None = None
 
 
 class OrgResponse(BaseModel):
@@ -87,9 +91,18 @@ class OrgResponse(BaseModel):
     org_key: str
     domain: str
     schema_name: str
+    enabled_modules: list[str] | None = None
     created_at: datetime.datetime
 
     model_config = {"from_attributes": True}
+
+
+class OrgModulesUpdate(BaseModel):
+    enabled_modules: list[str]
+
+
+class UserModulesUpdate(BaseModel):
+    enabled_modules: list[str] | None = None
 
 
 # ---- Individual User schemas ----

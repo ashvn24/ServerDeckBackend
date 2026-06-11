@@ -150,6 +150,63 @@ async def client_websocket(websocket: WebSocket):
                 params = data.get("params", {})
                 cmd_id = data.get("id") or str(uuid.uuid4())
 
+                # Authorize the action based on enabled modules
+                ACTION_MODULE_MAPPING = {
+                    "nginx.": "nginx",
+                    "pm2.": "pm2",
+                    "systemd.": "systemd",
+                    "automation.": "automation",
+                    "firewall.": "firewall",
+                    "process.": "processes",
+                    "ssl.": "ssl",
+                    "files.": "files",
+                    "luxegenie.": "luxegenie",
+                }
+                
+                authorized = True
+                blocked_module = None
+                if not is_platform_owner and action:
+                    from sqlalchemy import select, text
+                    from app.database import async_session_factory
+                    from app.models.user import User
+                    from app.services.tenant import get_user_resolved_modules
+                    
+                    # 1. Check direct action prefixes
+                    for prefix, module_name in ACTION_MODULE_MAPPING.items():
+                        if action.startswith(prefix):
+                            async with async_session_factory() as session:
+                                await session.execute(text(f"SET search_path TO {schema_name}, public"))
+                                result = await session.execute(select(User).where(User.id == user_id))
+                                current_user = result.scalar_one_or_none()
+                                if current_user:
+                                    resolved = await get_user_resolved_modules(session, current_user, schema_name)
+                                    if module_name not in resolved:
+                                        authorized = False
+                                        blocked_module = module_name
+                            break
+                            
+                    # 2. Check logs.stream source parameter
+                    if authorized and action == "logs.stream":
+                        source = params.get("source")
+                        if source in ("nginx", "pm2", "systemd"):
+                            async with async_session_factory() as session:
+                                await session.execute(text(f"SET search_path TO {schema_name}, public"))
+                                result = await session.execute(select(User).where(User.id == user_id))
+                                current_user = result.scalar_one_or_none()
+                                if current_user:
+                                    resolved = await get_user_resolved_modules(session, current_user, schema_name)
+                                    if source not in resolved:
+                                        authorized = False
+                                        blocked_module = source
+                                        
+                if not authorized:
+                    await websocket.send_json({
+                        "id": cmd_id,
+                        "status": "error",
+                        "error": f"Module '{blocked_module}' is disabled for your account."
+                    })
+                    continue
+
                 # Subscribe the originator to streaming output before dispatch,
                 # so chunks arriving faster than the response are not dropped.
                 if action == "logs.stream":
@@ -194,6 +251,31 @@ async def client_websocket(websocket: WebSocket):
                 rows = data.get("rows", 24)
                 shell = data.get("shell", "/bin/bash")
                 cmd_id = data.get("id") or str(uuid.uuid4())
+
+                # Check if ssh is enabled
+                authorized = True
+                if not is_platform_owner:
+                    from sqlalchemy import select, text
+                    from app.database import async_session_factory
+                    from app.models.user import User
+                    from app.services.tenant import get_user_resolved_modules
+                    async with async_session_factory() as session:
+                        await session.execute(text(f"SET search_path TO {schema_name}, public"))
+                        result = await session.execute(select(User).where(User.id == user_id))
+                        current_user = result.scalar_one_or_none()
+                        if current_user:
+                            resolved = await get_user_resolved_modules(session, current_user, schema_name)
+                            if "ssh" not in resolved:
+                                authorized = False
+
+                if not authorized:
+                    await websocket.send_json({
+                        "id": cmd_id,
+                        "type": "terminal_error",
+                        "status": "error",
+                        "error": "Terminal module (SSH) is disabled for your account."
+                    })
+                    continue
 
                 _subscribe_stream(websocket, cmd_id)
                 try:

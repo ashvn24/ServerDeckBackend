@@ -5,13 +5,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
 from app.database import get_db
-from app.middleware.auth import get_current_user
+from app.middleware.auth import get_current_user, require_module
 from app.models.user import User
 from app.models.server import Server
 from app.schemas.server import ServerCreate, ServerResponse
 from app.services.audit import record_audit
 
-router = APIRouter(prefix="/api/servers", tags=["servers"])
+router = APIRouter(
+    prefix="/api/servers",
+    tags=["servers"],
+    dependencies=[Depends(require_module("servers"))]
+)
 settings = get_settings()
 
 

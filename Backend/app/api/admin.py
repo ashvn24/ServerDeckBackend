@@ -17,7 +17,7 @@ from app.database import get_db
 from app.models.organization import Organization, PlatformUser, WaitlistRequest
 from app.models.user import User, Team, UserInvite
 from app.models.ticket import Ticket, TicketMessage
-from app.schemas.user import OrgCreate, OrgResponse, PlatformUserResponse, TokenResponse, IndividualUserCreate, IndividualUserResponse, IndividualUserInviteResponse, WaitlistResponse
+from app.schemas.user import OrgCreate, OrgResponse, PlatformUserResponse, TokenResponse, IndividualUserCreate, IndividualUserResponse, IndividualUserInviteResponse, WaitlistResponse, OrgModulesUpdate
 from app.schemas.ticket import TicketResponse, TicketDetailResponse, TicketUpdate, TicketMessageCreate, TicketMessageResponse
 router = APIRouter(prefix="/api/admin", tags=["admin"])
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
@@ -181,6 +181,25 @@ async def delete_organization(
     await db.execute(text(f"DROP SCHEMA IF EXISTS {org.schema_name} CASCADE"))
     await db.delete(org)
     await db.commit()
+
+
+@router.patch("/organizations/{org_id}/modules", response_model=OrgResponse)
+async def update_organization_modules(
+    org_id: str,
+    data: OrgModulesUpdate,
+    _: PlatformUser = Depends(require_platform_owner),
+    db: AsyncSession = Depends(get_db),
+):
+    """Update enabled modules list for an organization."""
+    result = await db.execute(select(Organization).where(Organization.id == org_id))
+    org = result.scalar_one_or_none()
+    if not org:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Organization not found")
+
+    org.enabled_modules = data.enabled_modules
+    await db.commit()
+    await db.refresh(org)
+    return org
 
 
 # ── Individual Users ──────────────────────────────────────────────────────────

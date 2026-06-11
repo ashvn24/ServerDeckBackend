@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime, timezone
-from sqlalchemy import String, DateTime, Boolean
+from sqlalchemy import String, DateTime, Boolean, JSON
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.dialects.postgresql import UUID
 from app.database import Base
@@ -28,6 +28,7 @@ class Organization(Base):
     domain: Mapped[str] = mapped_column(String(255), unique=True, index=True, nullable=False)
     org_key: Mapped[str] = mapped_column(String(255), unique=True, index=True, nullable=False)
     schema_name: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
+    enabled_modules: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 class AgentTokenMapping(Base):

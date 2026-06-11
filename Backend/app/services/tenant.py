@@ -200,3 +200,33 @@ async def resolve_tenant(conn: HTTPConnection) -> str | None:
         tenant_schema.set(schema_name)
         
     return schema_name
+
+
+async def get_user_resolved_modules(db: AsyncSession, user, tenant_schema_name: str | None) -> list[str]:
+    """Dynamically compute the active features/modules list for a user.
+    Takes into account user-level custom settings and organization-level module settings."""
+    from app.models.organization import Organization
+    from sqlalchemy import select
+
+    DEFAULT_MODULES = [
+        "dashboard", "servers", "tickets", "settings",
+        "nginx", "pm2", "systemd", "automation",
+        "firewall", "processes", "ssl", "ssh", "files", "luxegenie"
+    ]
+
+    if getattr(user, "role", None) == "support":
+        return ["tickets", "settings"]
+
+    if tenant_schema_name and tenant_schema_name.startswith("tenant_") and tenant_schema_name != "tenant_individual":
+        org_key = tenant_schema_name.split("tenant_")[1]
+        result = await db.execute(select(Organization).where(Organization.org_key == org_key))
+        org = result.scalar_one_or_none()
+        org_modules = org.enabled_modules if (org and org.enabled_modules is not None) else DEFAULT_MODULES
+    else:
+        org_modules = DEFAULT_MODULES
+
+    if getattr(user, "enabled_modules", None) is not None:
+        return [m for m in user.enabled_modules if m in org_modules]
+
+    return org_modules
+
