@@ -10,11 +10,12 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Deploy via SSH
+      - name: Deploy via SSH to Backend Instances
         id: deploy
         uses: appleboy/ssh-action@v1.0.3
         with:
-          host: ${{ secrets.EC2_HOST }}
+          # This tells GitHub to run the exact same deployment block across both hosts
+          host: ${{ secrets.EC2_HOST }},${{ secrets.EC2_HOST_2 }}
           username: ${{ secrets.EC2_USER }}
           key: ${{ secrets.EC2_SSH_KEY }}
           script: |
@@ -22,15 +23,14 @@ jobs:
             git pull origin main
             source /coderepo/ServerDeckBackend/venv/bin/activate
             pip install -r Backend/requirements.txt --quiet
-            systemctl daemon-reload
-            systemctl restart serverdeckapi.service
-            systemctl reload nginx
+            sudo systemctl daemon-reload
+            sudo systemctl restart serverdeckapi.service
 
-      - name: Verify Health Check
+      - name: Verify Health Check via Load Balancer
         run: |
-          echo "Waiting 5 seconds for service to restart..."
-          sleep 5
-          echo "Checking /api/health..."
+          echo "Waiting 10 seconds for services to cycle behind the ALB..."
+          sleep 10
+          echo "Checking /api/health via domain gateway..."
           RESPONSE=$(curl -s -X 'GET' 'https://api.serverdeck.online/api/health' -H 'accept: application/json')
           echo "Response: $RESPONSE"
           
@@ -66,7 +66,7 @@ jobs:
                   <tr><td style="padding:8px 0;color:#6b7280">Time</td><td style="padding:8px 0">${{ github.event.head_commit.timestamp }}</td></tr>
                 </table>
                 <div style="margin-top:20px;padding:12px 16px;background:#dcfce7;border-left:4px solid #16a34a;border-radius:4px">
-                  <p style="margin:0;color:#15803d;font-size:14px">🚀 ServerDeck backend is live and serving traffic.</p>
+                  <p style="margin:0;color:#15803d;font-size:14px">🚀 Both ServerDeck backends are upgraded and live behind the ALB.</p>
                 </div>
                 <div style="margin-top:16px;text-align:center">
                   <a href="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
