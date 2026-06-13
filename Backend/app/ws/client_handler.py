@@ -10,12 +10,13 @@ import json
 import logging
 import uuid
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
-from jose import JWTError, jwt
+from jose import JWTError
 
 from app.config import get_settings
 from app.services.command_bridge import send_command_to_agent
 from app.services.audit import record_audit
-from app.database import async_session_factory
+from app.database import async_session_factory, set_search_path
+from app.security import decode_token
 
 logger = logging.getLogger("serverdeck.ws.client")
 router = APIRouter()
@@ -70,6 +71,48 @@ async def _send_agent_fire_and_forget(server_id: str, action: str, params: dict)
     }))
 
 
+async def _user_owns_server(
+    schema_name: str,
+    team_id: str | None,
+    is_platform_owner: bool,
+    server_id: str | None,
+) -> bool:
+    """Verify the connected user is allowed to act on `server_id`.
+
+    `agent_by_server_id` is a process-global map spanning every tenant, so the
+    server_id supplied by a client MUST be checked against the caller's tenant
+    schema and team before any command/telemetry is routed to it. Without this
+    check, any authenticated user could drive agents belonging to other
+    organizations (cross-tenant RCE).
+    """
+    if not server_id:
+        return False
+
+    import uuid as _uuid
+    from sqlalchemy import select
+    from app.database import async_session_factory, set_search_path
+    from app.models.server import Server
+
+    try:
+        _uuid.UUID(str(server_id))
+    except (ValueError, TypeError):
+        return False
+
+    async with async_session_factory() as session:
+        try:
+            await set_search_path(session, schema_name)
+            result = await session.execute(select(Server).where(Server.id == server_id))
+            server = result.scalar_one_or_none()
+        except Exception:
+            return False
+
+    if not server:
+        return False
+    if is_platform_owner:
+        return True
+    return str(server.team_id) == str(team_id)
+
+
 @router.websocket("/ws/client")
 async def client_websocket(websocket: WebSocket):
     """Handle browser client WebSocket connections."""
@@ -83,7 +126,7 @@ async def client_websocket(websocket: WebSocket):
         return
 
     try:
-        payload = jwt.decode(token, settings.jwt_secret, algorithms=[settings.jwt_algorithm])
+        payload = decode_token(token)
         user_id = payload.get("sub")
         team_id = payload.get("team_id")
         schema_name = payload.get("tenant_schema")
@@ -105,6 +148,19 @@ async def client_websocket(websocket: WebSocket):
     client_watches[websocket] = set()
     client_streams[websocket] = set()
     client_ticket_watches[websocket] = set()
+
+    # Per-connection cache of server_ids the caller has been authorized for.
+    # Avoids a DB round-trip on every high-frequency message (terminal input).
+    authorized_servers: set[str] = set()
+
+    async def _authorize(server_id: str | None) -> bool:
+        if server_id and server_id in authorized_servers:
+            return True
+        if await _user_owns_server(schema_name, team_id, is_platform_owner, server_id):
+            authorized_servers.add(server_id)
+            return True
+        return False
+
     logger.info(f"Client connected: user_id={user_id} tenant={schema_name}")
 
     try:
@@ -116,6 +172,12 @@ async def client_websocket(websocket: WebSocket):
             if msg_type == "watch":
                 server_id = data.get("server_id")
                 if server_id:
+                    if not await _authorize(server_id):
+                        await websocket.send_json({
+                            "type": "error", "server_id": server_id,
+                            "error": "Not authorized for this server",
+                        })
+                        continue
                     if server_id not in server_watchers:
                         server_watchers[server_id] = set()
                     server_watchers[server_id].add(websocket)
@@ -150,6 +212,15 @@ async def client_websocket(websocket: WebSocket):
                 params = data.get("params", {})
                 cmd_id = data.get("id") or str(uuid.uuid4())
 
+                # Authorize that the caller actually owns this server (tenant
+                # isolation) before any module/action checks.
+                if not await _authorize(server_id):
+                    await websocket.send_json({
+                        "id": cmd_id, "status": "error",
+                        "error": "Not authorized for this server",
+                    })
+                    continue
+
                 # Authorize the action based on enabled modules
                 ACTION_MODULE_MAPPING = {
                     "nginx.": "nginx",
@@ -175,7 +246,7 @@ async def client_websocket(websocket: WebSocket):
                     for prefix, module_name in ACTION_MODULE_MAPPING.items():
                         if action.startswith(prefix):
                             async with async_session_factory() as session:
-                                await session.execute(text(f"SET search_path TO {schema_name}, public"))
+                                await set_search_path(session, schema_name)
                                 result = await session.execute(select(User).where(User.id == user_id))
                                 current_user = result.scalar_one_or_none()
                                 if current_user:
@@ -190,7 +261,7 @@ async def client_websocket(websocket: WebSocket):
                         source = params.get("source")
                         if source in ("nginx", "pm2", "systemd"):
                             async with async_session_factory() as session:
-                                await session.execute(text(f"SET search_path TO {schema_name}, public"))
+                                await set_search_path(session, schema_name)
                                 result = await session.execute(select(User).where(User.id == user_id))
                                 current_user = result.scalar_one_or_none()
                                 if current_user:
@@ -252,6 +323,14 @@ async def client_websocket(websocket: WebSocket):
                 shell = data.get("shell", "/bin/bash")
                 cmd_id = data.get("id") or str(uuid.uuid4())
 
+                # Tenant-ownership check before opening a shell on the server.
+                if not await _authorize(server_id):
+                    await websocket.send_json({
+                        "id": cmd_id, "type": "terminal_error", "status": "error",
+                        "error": "Not authorized for this server",
+                    })
+                    continue
+
                 # Check if ssh is enabled
                 authorized = True
                 if not is_platform_owner:
@@ -260,7 +339,7 @@ async def client_websocket(websocket: WebSocket):
                     from app.models.user import User
                     from app.services.tenant import get_user_resolved_modules
                     async with async_session_factory() as session:
-                        await session.execute(text(f"SET search_path TO {schema_name}, public"))
+                        await set_search_path(session, schema_name)
                         result = await session.execute(select(User).where(User.id == user_id))
                         current_user = result.scalar_one_or_none()
                         if current_user:
@@ -312,7 +391,7 @@ async def client_websocket(websocket: WebSocket):
                 server_id = data.get("server_id")
                 session_id = data.get("session_id")
                 input_data = data.get("data", "")
-                if server_id and session_id:
+                if server_id and session_id and await _authorize(server_id):
                     try:
                         await _send_agent_fire_and_forget(
                             server_id,
@@ -331,7 +410,7 @@ async def client_websocket(websocket: WebSocket):
                 session_id = data.get("session_id")
                 cols = data.get("cols", 80)
                 rows = data.get("rows", 24)
-                if server_id and session_id:
+                if server_id and session_id and await _authorize(server_id):
                     try:
                         await _send_agent_fire_and_forget(
                             server_id,
@@ -346,7 +425,7 @@ async def client_websocket(websocket: WebSocket):
                 session_id = data.get("session_id")
                 if session_id:
                     _unsubscribe_stream(session_id)
-                if server_id and session_id:
+                if server_id and session_id and await _authorize(server_id):
                     try:
                         await _send_agent_fire_and_forget(
                             server_id,

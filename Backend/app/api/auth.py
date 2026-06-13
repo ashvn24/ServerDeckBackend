@@ -1,3 +1,4 @@
+import logging
 from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks
 from sqlalchemy import select
@@ -6,7 +7,10 @@ from passlib.context import CryptContext
 from jose import jwt
 
 from app.config import get_settings
-from app.database import get_db
+from app.database import get_db, set_search_path, validate_schema_name
+from app.security import encode_token
+
+logger = logging.getLogger("serverdeck.auth")
 from app.models.user import User, Team
 from app.models.organization import Organization, PlatformUser, WaitlistRequest
 from app.schemas.user import UserCreate, UserLogin, TokenResponse, UserResponse, PlatformUserResponse, WaitlistCreate, WaitlistResponse
@@ -27,7 +31,7 @@ def create_access_token(user: User, tenant_schema: str, is_platform_owner: bool 
         "is_platform_owner": is_platform_owner,
         "exp": expire,
     }
-    return jwt.encode(payload, settings.jwt_secret, algorithm=settings.jwt_algorithm)
+    return encode_token(payload)
 
 
 def create_platform_owner_token(platform_user: PlatformUser) -> str:
@@ -39,7 +43,7 @@ def create_platform_owner_token(platform_user: PlatformUser) -> str:
         "is_platform_owner": True,
         "exp": expire,
     }
-    return jwt.encode(payload, settings.jwt_secret, algorithm=settings.jwt_algorithm)
+    return encode_token(payload)
 
 
 @router.post("/register", response_model=TokenResponse, status_code=status.HTTP_201_CREATED)
@@ -60,7 +64,7 @@ async def register(data: UserCreate, background_tasks: BackgroundTasks, db: Asyn
         schema_name = INDIVIDUAL_SCHEMA
         # Ensure the shared individual schema exists (lazy init, idempotent)
         await ensure_individual_schema_exists(db)
-        await db.execute(text(f"SET search_path TO {schema_name}, public"))
+        await set_search_path(db, schema_name)
 
         # Check if this personal email is already registered
         existing = await db.execute(select(User).where(User.email == data.email))
@@ -124,15 +128,18 @@ async def register(data: UserCreate, background_tasks: BackgroundTasks, db: Asyn
             await create_tenant_schema(schema_name, db)
             run_tenant_migrations(schema_name)
         except Exception as e:
-            await db.execute(text(f"DROP SCHEMA IF EXISTS {schema_name} CASCADE"))
+            logger.error(f"Failed to initialize organization schema {schema_name}: {e}")
+            await db.execute(
+                text("DROP SCHEMA IF EXISTS " + validate_schema_name(schema_name) + " CASCADE")
+            )
             await db.delete(new_org)
             await db.commit()
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Failed to initialize organization schema: {str(e)}"
+                detail="Failed to initialize organization. Please try again later."
             )
 
-        await db.execute(text(f"SET search_path TO {schema_name}, public"))
+        await set_search_path(db, schema_name)
 
     # Check if user already exists
     existing = await db.execute(select(User).where(User.email == data.email))
@@ -211,7 +218,7 @@ async def login(data: UserLogin, db: AsyncSession = Depends(get_db)):
     # ── Individual user (personal email) ────────────────────────────────────
     if org_key == "individual":
         schema_name = INDIVIDUAL_SCHEMA
-        await db.execute(text(f"SET search_path TO {schema_name}, public"))
+        await set_search_path(db, schema_name)
         result = await db.execute(select(User).where(User.email == data.email))
         user = result.scalar_one_or_none()
         if not user or not pwd_context.verify(data.password, user.password_hash):
@@ -237,7 +244,7 @@ async def login(data: UserLogin, db: AsyncSession = Depends(get_db)):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid email or password")
 
     schema_name = org.schema_name
-    await db.execute(text(f"SET search_path TO {schema_name}, public"))
+    await set_search_path(db, schema_name)
 
     result = await db.execute(select(User).where(User.email == data.email))
     user = result.scalar_one_or_none()

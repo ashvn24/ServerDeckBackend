@@ -10,6 +10,12 @@ class Settings(BaseSettings):
     jwt_secret: str
     jwt_algorithm: str
     jwt_expire_hours: int
+    jwt_issuer: str = "serverdeck"
+    jwt_audience: str = "serverdeck-api"
+
+    # One-time platform-owner bootstrap secret. Must be set (and supplied by the
+    # caller) for POST /api/admin/setup to succeed. If unset, setup is disabled.
+    admin_setup_secret: str | None = None
 
     # CORS
     cors_origins: list[str]

@@ -139,8 +139,6 @@ async def invite_user(
         org_name=org_key.capitalize()
     )
     
-    print(f"INVITATION CREATED: {data.email} ({data.role}) -> {invite_url}")
-
     return {"message": "Invitation sent", "token": token}
 
 @router.get("/invite-details/{token}")

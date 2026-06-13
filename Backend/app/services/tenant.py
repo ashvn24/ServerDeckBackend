@@ -48,6 +48,8 @@ def get_org_key_from_email(email: str) -> str | None:
 
 async def create_tenant_schema(schema_name: str, db: AsyncSession):
     """Run CREATE SCHEMA query in PostgreSQL."""
+    from app.database import validate_schema_name
+    schema_name = validate_schema_name(schema_name)
     await db.execute(text(f"CREATE SCHEMA IF NOT EXISTS {schema_name}"))
     await db.commit()
 
@@ -155,10 +157,8 @@ async def resolve_tenant(conn: HTTPConnection) -> str | None:
                 schema_name = f"tenant_{org_key}"
         else:
             try:
-                from jose import jwt
-                from app.config import get_settings
-                settings = get_settings()
-                payload = jwt.decode(token, settings.jwt_secret, algorithms=[settings.jwt_algorithm])
+                from app.security import decode_token
+                payload = decode_token(token)
                 schema_name = payload.get("tenant_schema")
             except Exception:
                 pass
@@ -196,9 +196,16 @@ async def resolve_tenant(conn: HTTPConnection) -> str | None:
                     schema_name = f"tenant_{org_key}"
 
     if schema_name:
-        from app.database import tenant_schema
+        from app.database import tenant_schema, validate_schema_name
+        try:
+            # Reject malformed schema names (e.g. injection via invite token
+            # org_key) before they can reach any raw SET search_path statement.
+            schema_name = validate_schema_name(schema_name)
+        except ValueError:
+            logger.warning("Rejected invalid tenant schema name during resolution")
+            return None
         tenant_schema.set(schema_name)
-        
+
     return schema_name
 
 

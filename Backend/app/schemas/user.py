@@ -1,13 +1,16 @@
 import datetime
 import uuid
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, Field
 from uuid import UUID
+
+# Shared password constraint: minimum length enforced at the API boundary.
+PasswordStr = Field(min_length=8, max_length=128)
 
 
 class UserCreate(BaseModel):
     name: str
     email: EmailStr
-    password: str
+    password: str = PasswordStr
 
 
 class UserLogin(BaseModel):
@@ -34,14 +37,14 @@ class UserInviteCreate(BaseModel):
 class UserDirectCreate(BaseModel):
     name: str
     email: EmailStr
-    password: str
+    password: str = PasswordStr
     role: str = "member"
 
 
 class UserAcceptInvite(BaseModel):
     token: str
     name: str
-    password: str
+    password: str = PasswordStr
 
 
 class UserManagementResponse(BaseModel):
@@ -81,7 +84,7 @@ class OrgCreate(BaseModel):
     domain: str
     admin_name: str
     admin_email: EmailStr
-    admin_password: str
+    admin_password: str = PasswordStr
     enabled_modules: list[str] | None = None
 
 

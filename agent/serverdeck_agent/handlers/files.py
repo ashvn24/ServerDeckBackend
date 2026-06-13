@@ -85,14 +85,27 @@ async def handle_write(params: dict) -> dict:
     except Exception as e:
         return {"error": str(e)}
 
+# Critical paths that must never be deleted, even by an authorized operator.
+_PROTECTED_PATHS = {
+    "/", "/bin", "/boot", "/dev", "/etc", "/home", "/lib", "/lib64",
+    "/proc", "/root", "/run", "/sbin", "/srv", "/sys", "/usr", "/var",
+}
+
+
 async def handle_delete(params: dict) -> dict:
     """Delete a file or directory."""
     path = params.get("path")
     if not path:
         return {"error": "Path is required"}
-        
-    if path == "/" or path == "/root" or path == "/home":
-         return {"error": "Safety first: cannot delete root or home directories"}
+
+    if not os.path.isabs(path):
+        return {"error": "Path must be absolute"}
+
+    # Normalize (resolve "..", trailing slashes, symlinks) before the guard so
+    # paths like "/root/" or "/etc/../etc" cannot slip past the protected set.
+    normalized = os.path.realpath(path)
+    if normalized in _PROTECTED_PATHS:
+        return {"error": "Safety first: cannot delete a protected system directory"}
 
     try:
         if os.path.isdir(path):
@@ -132,9 +145,10 @@ async def handle_download(params: dict) -> dict:
         
         # If it's a directory, zip it
         if os.path.isdir(path):
-            temp_zip = tempfile.mktemp(suffix=".zip")
-            # shutil.make_archive adds the extension automatically if not present
-            # but we use a full path for control
+            # mkstemp creates the file securely (no symlink/predictable-name race);
+            # we only need a unique base path for make_archive.
+            fd, temp_zip = tempfile.mkstemp(suffix=".zip")
+            os.close(fd)
             base_dir = os.path.dirname(path)
             root_dir = os.path.basename(path)
             shutil.make_archive(temp_zip.replace(".zip", ""), "zip", base_dir, root_dir)

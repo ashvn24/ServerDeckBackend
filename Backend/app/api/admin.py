@@ -3,17 +3,19 @@ Admin API — platform owner only.
 Endpoints for managing organizations and their initial superadmin users.
 """
 import logging
+import secrets
 import traceback
 from app.services.email_service import send_org_creation_email
 from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from passlib.context import CryptContext
-from jose import jwt, JWTError
+from jose import JWTError
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
 from app.config import get_settings
-from app.database import get_db
+from app.database import get_db, set_search_path, validate_schema_name
+from app.security import decode_token
 from app.models.organization import Organization, PlatformUser, WaitlistRequest
 from app.models.user import User, Team, UserInvite
 from app.models.ticket import Ticket, TicketMessage
@@ -32,11 +34,7 @@ async def require_platform_owner(
 ) -> PlatformUser:
     """Dependency that ensures the caller is the platform owner."""
     try:
-        payload = jwt.decode(
-            credentials.credentials,
-            settings.jwt_secret,
-            algorithms=[settings.jwt_algorithm],
-        )
+        payload = decode_token(credentials.credentials)
     except JWTError:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
 
@@ -59,11 +57,27 @@ async def setup_platform_owner(
     name: str,
     email: str,
     password: str,
+    setup_secret: str,
     db: AsyncSession = Depends(get_db),
 ):
     """One-time endpoint to create the platform owner account.
-    Returns 409 if a platform owner already exists.
+
+    Requires the deploy-time `admin_setup_secret`. Without this gate, anyone
+    could seize the platform-owner account on a fresh deployment before the
+    legitimate operator runs setup. Returns 409 if an owner already exists.
     """
+    if not settings.admin_setup_secret:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Platform setup is disabled.",
+        )
+    # Constant-time comparison to avoid leaking the secret via timing.
+    if not secrets.compare_digest(setup_secret, settings.admin_setup_secret):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Invalid setup secret.",
+        )
+
     existing = await db.execute(select(PlatformUser))
     if existing.scalar_one_or_none():
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Platform owner already exists")
@@ -112,6 +126,15 @@ async def create_organization(
     schema_name = f"tenant_{org_key}"
     domain = data.domain.strip().lower()
 
+    # Reject org keys that would produce an invalid/injectable schema name.
+    try:
+        validate_schema_name(schema_name)
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="org_key may only contain lowercase letters, digits, and underscores.",
+        )
+
     # Validate uniqueness
     existing_org = await db.execute(select(Organization).where(Organization.org_key == org_key))
     if existing_org.scalar_one_or_none():
@@ -136,16 +159,19 @@ async def create_organization(
         await create_tenant_schema(schema_name, db)
         run_tenant_migrations(schema_name)
     except Exception as e:
-        await db.execute(text(f"DROP SCHEMA IF EXISTS {schema_name} CASCADE"))
+        logger.error(f"Failed to initialize schema {schema_name}: {e}")
+        await db.execute(
+            text("DROP SCHEMA IF EXISTS " + validate_schema_name(schema_name) + " CASCADE")
+        )
         await db.delete(org)
         await db.commit()
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to initialize schema: {str(e)}"
+            detail="Failed to initialize organization schema. Please try again later."
         )
 
     # Create the org superadmin user inside the tenant schema
-    await db.execute(text(f"SET search_path TO {schema_name}, public"))
+    await set_search_path(db, schema_name)
 
     team = Team(name=f"{data.name} Team")
     db.add(team)
@@ -178,7 +204,9 @@ async def delete_organization(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Organization not found")
 
     # Drop the tenant schema
-    await db.execute(text(f"DROP SCHEMA IF EXISTS {org.schema_name} CASCADE"))
+    await db.execute(
+        text("DROP SCHEMA IF EXISTS " + validate_schema_name(org.schema_name) + " CASCADE")
+    )
     await db.delete(org)
     await db.commit()
 
@@ -216,7 +244,7 @@ async def list_individual_users(
     try:
         await ensure_individual_schema_exists(db)
         logger.info(f"[admin/users] Schema ready: {INDIVIDUAL_SCHEMA}, setting search_path")
-        await db.execute(text(f"SET search_path TO {INDIVIDUAL_SCHEMA}, public"))
+        await set_search_path(db, INDIVIDUAL_SCHEMA)
         result = await db.execute(select(User).order_by(User.created_at.desc()))
         users = result.scalars().all()
         logger.info(f"[admin/users] Found {len(users)} individual user(s)")
@@ -225,7 +253,7 @@ async def list_individual_users(
         raise
     except Exception as exc:
         logger.error(f"[admin/users] Unexpected error listing users: {exc}\n{traceback.format_exc()}")
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc))
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to list users")
 
 
 @router.post("/users", response_model=IndividualUserInviteResponse, status_code=status.HTTP_201_CREATED)
@@ -257,7 +285,7 @@ async def create_individual_user(
         logger.info(f"[admin/users] Ensuring schema exists: {INDIVIDUAL_SCHEMA}")
         await ensure_individual_schema_exists(db)
         logger.info(f"[admin/users] Schema ready, setting search_path to {INDIVIDUAL_SCHEMA}")
-        await db.execute(text(f"SET search_path TO {INDIVIDUAL_SCHEMA}, public"))
+        await set_search_path(db, INDIVIDUAL_SCHEMA)
 
         # Step 3 — check for duplicate user
         logger.info(f"[admin/users] Checking for existing user with email: {data.email}")
@@ -310,7 +338,7 @@ async def create_individual_user(
             org_name="ServerDeck Personal"
         )
         
-        logger.info(f"[admin/users] Individual user invite created successfully: email={data.email}, token={token}")
+        logger.info(f"[admin/users] Individual user invite created successfully: email={data.email}")
         
         return IndividualUserInviteResponse(
             message="Invitation sent successfully",
@@ -324,7 +352,7 @@ async def create_individual_user(
         logger.error(f"[admin/users] Unexpected error creating user: {exc}\n{traceback.format_exc()}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Server error: {str(exc)}"
+            detail="Failed to create user"
         )
 
 
@@ -339,7 +367,7 @@ async def delete_individual_user(
 
     logger.info(f"[admin/users] Deleting individual user: id={user_id}")
     try:
-        await db.execute(text(f"SET search_path TO {INDIVIDUAL_SCHEMA}, public"))
+        await set_search_path(db, INDIVIDUAL_SCHEMA)
         result = await db.execute(select(User).where(User.id == user_id))
         user = result.scalar_one_or_none()
         if not user:
@@ -366,7 +394,7 @@ async def delete_individual_user(
         logger.error(f"[admin/users] Unexpected error deleting user {user_id}: {exc}\n{traceback.format_exc()}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Server error: {str(exc)}"
+            detail="Failed to delete user"
         )
 
 
@@ -382,7 +410,7 @@ async def update_individual_user_modules(
     import uuid
     target_uuid = uuid.UUID(user_id)
     
-    await db.execute(text(f"SET search_path TO {INDIVIDUAL_SCHEMA}, public"))
+    await set_search_path(db, INDIVIDUAL_SCHEMA)
     result = await db.execute(select(User).where(User.id == target_uuid))
     target_user = result.scalar_one_or_none()
     if not target_user:
@@ -407,7 +435,7 @@ async def list_individual_tickets(
     
     try:
         await ensure_individual_schema_exists(db)
-        await db.execute(text(f"SET search_path TO {INDIVIDUAL_SCHEMA}, public"))
+        await set_search_path(db, INDIVIDUAL_SCHEMA)
         
         query = select(Ticket).options(
             selectinload(Ticket.created_by),
@@ -418,7 +446,7 @@ async def list_individual_tickets(
         return result.scalars().all()
     except Exception as exc:
         logger.error(f"[admin/tickets] Error listing tickets: {exc}\n{traceback.format_exc()}")
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc))
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to list tickets")
 
 
 @router.get("/tickets/{ticket_id}", response_model=TicketDetailResponse)
@@ -431,7 +459,7 @@ async def get_individual_ticket(
     from app.services.tenant import INDIVIDUAL_SCHEMA
     from sqlalchemy.orm import selectinload
     
-    await db.execute(text(f"SET search_path TO {INDIVIDUAL_SCHEMA}, public"))
+    await set_search_path(db, INDIVIDUAL_SCHEMA)
     
     result = await db.execute(
         select(Ticket)
@@ -462,7 +490,7 @@ async def update_individual_ticket(
     from sqlalchemy.orm import selectinload
     import datetime
     
-    await db.execute(text(f"SET search_path TO {INDIVIDUAL_SCHEMA}, public"))
+    await set_search_path(db, INDIVIDUAL_SCHEMA)
     
     result = await db.execute(
         select(Ticket)
@@ -506,7 +534,7 @@ async def add_individual_ticket_message(
     from sqlalchemy.orm import selectinload
     import datetime
     
-    await db.execute(text(f"SET search_path TO {INDIVIDUAL_SCHEMA}, public"))
+    await set_search_path(db, INDIVIDUAL_SCHEMA)
     
     result = await db.execute(select(Ticket).where(Ticket.id == ticket_id))
     ticket = result.scalar_one_or_none()
@@ -561,7 +589,7 @@ async def list_waitlist(
         
     emails = [req.email for req in requests]
     
-    await db.execute(text(f"SET search_path TO {INDIVIDUAL_SCHEMA}, public"))
+    await set_search_path(db, INDIVIDUAL_SCHEMA)
     
     # Check who has an invite
     invite_result = await db.execute(select(UserInvite.email).where(UserInvite.email.in_(emails)))
@@ -620,7 +648,7 @@ async def approve_waitlist(
     settings = get_settings()
 
     await ensure_individual_schema_exists(db)
-    await db.execute(text(f"SET search_path TO {INDIVIDUAL_SCHEMA}, public"))
+    await set_search_path(db, INDIVIDUAL_SCHEMA)
 
     user_result = await db.execute(select(User).where(User.email == email))
     if user_result.scalar_one_or_none():

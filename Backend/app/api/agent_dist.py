@@ -1,5 +1,6 @@
 import io
 import os
+import logging
 import tarfile
 from pathlib import Path
 from fastapi import APIRouter
@@ -97,5 +98,6 @@ async def download_agent_deb():
             },
         )
     except Exception as e:
-        return {"error": f"Failed to build Debian package: {str(e)}"}
+        logging.getLogger("serverdeck.agent_dist").error(f"Failed to build Debian package: {e}")
+        return {"error": "Failed to build Debian package"}
 
