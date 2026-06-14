@@ -269,3 +269,4 @@ venv/
 .venv/
 env/
 ENV/
+SECURITY.md
