@@ -211,7 +211,7 @@ async def handle_discover(params: dict) -> dict:
     sqlite_dbs = _discover_sqlite()
     engines.extend(sqlite_dbs)
 
-    return {"status": "success", "data": {"engines": engines}}
+    return {"engines": engines}
 
 
 async def handle_list_databases(params: dict) -> dict:
@@ -226,25 +226,25 @@ async def handle_list_databases(params: dict) -> dict:
     if engine == "postgres":
         res = _psql_cmd(params, "SELECT datname FROM pg_database WHERE datistemplate = false ORDER BY datname;")
         if res["returncode"] != 0:
-            return {"status": "error", "error": res["stderr"] or "Failed to connect to PostgreSQL"}
+            return {"error": res["stderr"] or "Failed to connect to PostgreSQL"}
         databases = [line for line in res["stdout"].splitlines() if line.strip()]
-        return {"status": "success", "data": {"databases": databases}}
+        return {"databases": databases}
 
     elif engine == "mysql":
         res = _mysql_cmd(params, "SHOW DATABASES;")
         if res["returncode"] != 0:
-            return {"status": "error", "error": res["stderr"] or "Failed to connect to MySQL"}
+            return {"error": res["stderr"] or "Failed to connect to MySQL"}
         databases = [line for line in res["stdout"].splitlines() if line.strip()]
-        return {"status": "success", "data": {"databases": databases}}
+        return {"databases": databases}
 
     elif engine == "sqlite":
         # For SQLite, the "database" is the file itself
         path = params.get("path", "")
         if not path or not os.path.isfile(path):
-            return {"status": "error", "error": f"SQLite file not found: {path}"}
-        return {"status": "success", "data": {"databases": [os.path.basename(path)], "path": path}}
+            return {"error": f"SQLite file not found: {path}"}
+        return {"databases": [os.path.basename(path)], "path": path}
 
-    return {"status": "error", "error": f"Unknown engine: {engine}"}
+    return {"error": f"Unknown engine: {engine}"}
 
 
 async def handle_get_schema(params: dict) -> dict:
@@ -278,8 +278,8 @@ async def handle_get_schema(params: dict) -> dict:
             database=database
         )
         if res["returncode"] != 0:
-            return {"status": "error", "error": res["stderr"] or "Failed to query schema"}
-        return {"status": "success", "data": {"schema": _parse_pg_schema(res["stdout"])}}
+            return {"error": res["stderr"] or "Failed to query schema"}
+        return {"schema": _parse_pg_schema(res["stdout"])}
 
     elif engine == "mysql":
         res = _mysql_cmd(
@@ -292,13 +292,13 @@ async def handle_get_schema(params: dict) -> dict:
             """,
         )
         if res["returncode"] != 0:
-            return {"status": "error", "error": res["stderr"] or "Failed to query schema"}
-        return {"status": "success", "data": {"schema": _parse_mysql_schema(res["stdout"])}}
+            return {"error": res["stderr"] or "Failed to query schema"}
+        return {"schema": _parse_mysql_schema(res["stdout"])}
 
     elif engine == "sqlite":
         path = params.get("path", "")
         if not path or not os.path.isfile(path):
-            return {"status": "error", "error": f"SQLite file not found: {path}"}
+            return {"error": f"SQLite file not found: {path}"}
         try:
             import sqlite3
             con = sqlite3.connect(path, timeout=10)
@@ -313,11 +313,11 @@ async def handle_get_schema(params: dict) -> dict:
                     cols.append({"name": row[1], "type": row[2], "nullable": not row[3]})
                 schema[table] = cols
             con.close()
-            return {"status": "success", "data": {"schema": schema}}
+            return {"schema": schema}
         except Exception as e:
-            return {"status": "error", "error": str(e)}
+            return {"error": str(e)}
 
-    return {"status": "error", "error": f"Unknown engine: {engine}"}
+    return {"error": f"Unknown engine: {engine}"}
 
 
 async def handle_execute(params: dict) -> dict:
@@ -332,7 +332,7 @@ async def handle_execute(params: dict) -> dict:
     sql = params.get("sql", "").strip()
 
     if not sql:
-        return {"status": "error", "error": "No SQL query provided"}
+        return {"error": "No SQL query provided"}
 
     logger.info(f"Executing SQL on {engine}/{database}: {sql[:80]}...")
 
@@ -341,46 +341,43 @@ async def handle_execute(params: dict) -> dict:
         # Use json_agg mode so column names are preserved
         res = _psql_cmd(params, sql, database=database, as_json=True)
         if res["returncode"] != 0:
-            return {"status": "error", "error": res["stderr"] or "Query failed"}
+            return {"error": res["stderr"] or "Query failed"}
         raw = res["stdout"].strip()
         if raw == "" or raw.lower() == "null":
             # Non-SELECT statement (INSERT/UPDATE/DELETE/CREATE etc.)
-            return {"status": "success", "data": {"columns": [], "rows": [], "row_count": 0}}
+            return {"columns": [], "rows": [], "row_count": 0}
         try:
             json_rows = json.loads(raw)  # list of dicts
             if not json_rows:
-                return {"status": "success", "data": {"columns": [], "rows": [], "row_count": 0}}
+                return {"columns": [], "rows": [], "row_count": 0}
             columns = list(json_rows[0].keys())
             rows = [[r.get(c) for c in columns] for r in json_rows]
-            return {"status": "success", "data": {"columns": columns, "rows": rows, "row_count": len(rows)}}
+            return {"columns": columns, "rows": rows, "row_count": len(rows)}
         except json.JSONDecodeError:
             # Fallback to raw line parsing for DDL output
-            return {"status": "success", "data": {"columns": ["output"], "rows": [[l] for l in raw.splitlines()], "row_count": len(raw.splitlines())}}
+            return {"columns": ["output"], "rows": [[l] for l in raw.splitlines()], "row_count": len(raw.splitlines())}
 
     elif engine == "mysql":
         res = _mysql_cmd(params, sql, database=database)
         if res["returncode"] != 0:
-            return {"status": "error", "error": res["stderr"] or "Query failed"}
+            return {"error": res["stderr"] or "Query failed"}
         rows, columns = _parse_mysql_output(res["stdout"])
-        return {"status": "success", "data": {"columns": columns, "rows": rows, "row_count": len(rows)}}
+        return {"columns": columns, "rows": rows, "row_count": len(rows)}
 
     elif engine == "sqlite":
         path = params.get("path", "")
         if not path or not os.path.isfile(path):
-            return {"status": "error", "error": f"SQLite file not found: {path}"}
+            return {"error": f"SQLite file not found: {path}"}
         result = _sqlite_execute(path, sql)
         if result["error"]:
-            return {"status": "error", "error": result["error"]}
+            return {"error": result["error"]}
         return {
-            "status": "success",
-            "data": {
-                "columns": result["columns"],
-                "rows": result["rows"],
-                "row_count": result["row_count"],
-            }
+            "columns": result["columns"],
+            "rows": result["rows"],
+            "row_count": result["row_count"],
         }
 
-    return {"status": "error", "error": f"Unknown engine: {engine}"}
+    return {"error": f"Unknown engine: {engine}"}
 
 
 async def handle_test_connection(params: dict) -> dict:
@@ -396,15 +393,15 @@ async def handle_test_connection(params: dict) -> dict:
         res = _psql_cmd(params, "SELECT version();")
         if res["returncode"] == 0:
             version = res["stdout"].strip().split("\n")[0]
-            return {"status": "success", "data": {"connected": True, "version": version}}
-        return {"status": "error", "error": res["stderr"] or "Connection failed"}
+            return {"connected": True, "version": version}
+        return {"error": res["stderr"] or "Connection failed"}
 
     elif engine == "mysql":
         res = _mysql_cmd(params, "SELECT VERSION();")
         if res["returncode"] == 0:
             version = res["stdout"].strip()
-            return {"status": "success", "data": {"connected": True, "version": version}}
-        return {"status": "error", "error": res["stderr"] or "Connection failed"}
+            return {"connected": True, "version": version}
+        return {"error": res["stderr"] or "Connection failed"}
 
     elif engine == "sqlite":
         path = params.get("path", "")
@@ -412,10 +409,10 @@ async def handle_test_connection(params: dict) -> dict:
             result = _sqlite_execute(path, "SELECT sqlite_version();")
             if not result["error"]:
                 version = result["rows"][0][0] if result["rows"] else "unknown"
-                return {"status": "success", "data": {"connected": True, "version": f"SQLite {version}"}}
-        return {"status": "error", "error": "SQLite file not found or unreadable"}
+                return {"connected": True, "version": f"SQLite {version}"}
+        return {"error": "SQLite file not found or unreadable"}
 
-    return {"status": "error", "error": f"Unknown engine: {engine}"}
+    return {"error": f"Unknown engine: {engine}"}
 
 
 # ---------- Output Parsers ----------
