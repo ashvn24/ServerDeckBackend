@@ -9,7 +9,7 @@ import sys
 
 from serverdeck_agent.config import load_config
 from serverdeck_agent.connection import AgentConnection
-from serverdeck_agent.handlers import nginx, systemd, pm2, ssl, logs, firewall, process, agent, files, automation, luxegenie_health
+from serverdeck_agent.handlers import nginx, systemd, pm2, ssl, logs, firewall, process, agent, files, automation, luxegenie_health, sql
 
 logging.basicConfig(
     level=logging.INFO,
@@ -79,6 +79,12 @@ HANDLERS = {
     "luxegenie.serial": luxegenie_health.handle_serial,
     "luxegenie.firmware": luxegenie_health.handle_firmware,
     "luxegenie.network": luxegenie_health.handle_network,
+    # SQL Explorer
+    "sql.discover": sql.handle_discover,
+    "sql.list_databases": sql.handle_list_databases,
+    "sql.get_schema": sql.handle_get_schema,
+    "sql.execute": sql.handle_execute,
+    "sql.test_connection": sql.handle_test_connection,
 }
 
 # Allowlist of valid actions (security: reject unknown commands)

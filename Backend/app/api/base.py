@@ -1,4 +1,4 @@
-from app.api import auth, servers, sites, dashboard, logs, agent_dist, users, folders, audit, admin, tickets, alerts
+from app.api import auth, servers, sites, dashboard, logs, agent_dist, users, folders, audit, admin, tickets, alerts, sql
 from app.ws import agent_handler, client_handler
 
 from fastapi import APIRouter
@@ -18,6 +18,7 @@ app.include_router(audit.router)
 app.include_router(admin.router)
 app.include_router(tickets.router)
 app.include_router(alerts.router)
+app.include_router(sql.router)
 
 # WebSocket routers
 app.include_router(agent_handler.router)
