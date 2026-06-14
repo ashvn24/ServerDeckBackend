@@ -63,7 +63,12 @@ def _agent_params(conn: ConnectionParams) -> dict:
 
 
 async def _call_agent(server_id: str, action: str, params: dict) -> dict:
-    result = await send_command_to_agent(server_id, action, params)
+    try:
+        result = await send_command_to_agent(server_id, action, params)
+    except ConnectionError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    except TimeoutError as e:
+        raise HTTPException(status_code=504, detail=str(e))
     if result.get("status") == "error":
         raise HTTPException(status_code=400, detail=result.get("error", "Agent error"))
     return result.get("data", {})
@@ -149,10 +154,7 @@ async def discover_databases(
         params["user"] = user
     if password:
         params["password"] = password
-    result = await send_command_to_agent(server_id, "sql.discover", params)
-    if result.get("status") == "error":
-        raise HTTPException(status_code=400, detail=result.get("error", "Agent error"))
-    return result.get("data", {})
+    return await _call_agent(server_id, "sql.discover", params)
 
 
 @router.post("/databases")
@@ -215,7 +217,13 @@ async def natural_language_query(
     exec_params = _agent_params(req)
     exec_params["sql"] = sql
 
-    result = await send_command_to_agent(server_id, "sql.execute", exec_params)
+    try:
+        result = await send_command_to_agent(server_id, "sql.execute", exec_params)
+    except ConnectionError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    except TimeoutError as e:
+        raise HTTPException(status_code=504, detail=str(e))
+
     if result.get("status") == "error":
         # Return SQL so user can debug even if execution fails
         return {
