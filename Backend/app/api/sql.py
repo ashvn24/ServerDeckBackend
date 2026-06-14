@@ -20,7 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import get_settings
 from app.database import get_db
 from app.middleware.auth import get_current_user
-from app.models.user import PlatformUser
+from app.models.organization import PlatformUser
 from app.services.command_bridge import send_command_to_agent
 
 logger = logging.getLogger("serverdeck.sql")
