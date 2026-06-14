@@ -17,12 +17,16 @@ async def handle_uninstall(params: dict) -> dict:
     # This ensures that even when the service stops, the cleanup script continues to run.
     uninstall_script = (
         "systemd-run --on-active=2s /bin/bash -c '"
-        "systemctl stop serverdeck-agent; "
-        "systemctl disable serverdeck-agent; "
+        "if command -v dpkg &>/dev/null && dpkg -s serverdeck-agent &>/dev/null; then "
+        "  dpkg --purge serverdeck-agent || true; "
+        "fi; "
+        "systemctl stop serverdeck-agent || true; "
+        "systemctl disable serverdeck-agent || true; "
         "rm -f /etc/systemd/system/serverdeck-agent.service; "
-        "systemctl daemon-reload; "
+        "systemctl daemon-reload || true; "
         "rm -rf /opt/serverdeck /etc/serverdeck; "
-        "logger \"ServerDeck Agent uninstalled and files removed\"'"
+        "rm -f /tmp/serverdeck-agent.deb /tmp/serverdeck-agent.tar.gz; "
+        "logger \"ServerDeck Agent uninstalled and all related files cleaned up completely\"'"
     )
     
     try:
