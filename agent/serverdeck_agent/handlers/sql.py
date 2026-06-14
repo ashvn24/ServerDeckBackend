@@ -33,25 +33,45 @@ def _build_psql_env(params: dict) -> dict:
 
 
 def _psql_cmd(params: dict, query: str, database: str = "postgres", as_json: bool = False) -> dict:
-    """Run a psql query and return stdout/stderr/returncode."""
+    """Run a psql query and return stdout/stderr/returncode.
+
+    Authentication strategy:
+    - If explicit host OR password supplied → use standard psql with credentials
+      (password goes into PGPASSWORD env var, host enables TCP which uses md5/scram)
+    - If neither supplied → use local Unix socket with peer auth by running psql
+      as the postgres OS user via `sudo -u postgres psql` (agent typically runs as root)
+    """
     user = params.get("user", "postgres")
     host = params.get("host", "")
     port = str(params.get("port", 5432))
     db = params.get("database", database)
     env = _build_psql_env(params)
+    password = params.get("password", "")
 
+    # Build the inner psql argument list
     if as_json:
-        # Wrap in json_agg to get column names + typed rows
         wrapped = f"SELECT json_agg(row_to_json(t)) FROM ({query.rstrip(';')}) t;"
-        cmd = ["psql", "-U", user, "-d", db, "-t", "-A", "-c", wrapped]
+        psql_args = ["-U", user, "-d", db, "-t", "-A", "-c", wrapped]
     else:
-        cmd = ["psql", "-U", user, "-d", db, "-t", "-A", "-F", "\t", "-c", query]
+        psql_args = ["-U", user, "-d", db, "-t", "-A", "-F", "\t", "-c", query]
     if host:
-        cmd += ["-h", host]
-    cmd += ["-p", port]
+        psql_args += ["-h", host]
+    psql_args += ["-p", port]
+
+    # Choose execution strategy
+    if not host and not password:
+        # Local socket — use peer auth by switching to the postgres OS user
+        # This works when the agent runs as root (most server deployments).
+        # Fall back to a direct call if sudo is unavailable.
+        cmd = ["sudo", "-u", "postgres", "psql"] + psql_args
+    else:
+        cmd = ["psql"] + psql_args
 
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=15, env=env)
+        # If sudo failed (e.g. not installed), try direct psql as fallback
+        if result.returncode != 0 and not host and not password and b"sudo" not in (result.stderr or "").encode():
+            result = subprocess.run(["psql"] + psql_args, capture_output=True, text=True, timeout=15, env=env)
         return {
             "stdout": result.stdout.strip(),
             "stderr": result.stderr.strip(),
