@@ -25,6 +25,7 @@ class UserResponse(BaseModel):
     team_id: UUID
     role: str
     enabled_modules: list[str] | None = None
+    org_modules: list[str] | None = None
 
     model_config = {"from_attributes": True}
 

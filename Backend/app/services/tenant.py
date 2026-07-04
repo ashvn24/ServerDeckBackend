@@ -218,7 +218,7 @@ async def get_user_resolved_modules(db: AsyncSession, user, tenant_schema_name: 
     DEFAULT_MODULES = [
         "dashboard", "servers", "tickets", "settings",
         "nginx", "pm2", "systemd", "automation",
-        "firewall", "processes", "ssl", "ssh", "files", "luxegenie"
+        "firewall", "processes", "ssl", "ssh", "files", "luxegenie", "sql"
     ]
 
     if getattr(user, "role", None) == "support":
@@ -236,4 +236,25 @@ async def get_user_resolved_modules(db: AsyncSession, user, tenant_schema_name: 
         return [m for m in user.enabled_modules if m in org_modules]
 
     return org_modules
+
+
+async def get_org_enabled_modules(db: AsyncSession, tenant_schema_name: str | None) -> list[str]:
+    """Retrieve the enabled modules list for the organization/tenant."""
+    from app.models.organization import Organization
+    from sqlalchemy import select
+
+    DEFAULT_MODULES = [
+        "dashboard", "servers", "tickets", "settings",
+        "nginx", "pm2", "systemd", "automation",
+        "firewall", "processes", "ssl", "ssh", "files", "luxegenie", "sql"
+    ]
+
+    if tenant_schema_name and tenant_schema_name.startswith("tenant_") and tenant_schema_name != "tenant_individual":
+        org_key = tenant_schema_name.split("tenant_")[1]
+        result = await db.execute(select(Organization).where(Organization.org_key == org_key))
+        org = result.scalar_one_or_none()
+        if org and org.enabled_modules is not None:
+            return org.enabled_modules
+    return DEFAULT_MODULES
+
 

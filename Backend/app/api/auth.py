@@ -90,10 +90,12 @@ async def register(data: UserCreate, background_tasks: BackgroundTasks, db: Asyn
         token = create_access_token(user, schema_name)
         background_tasks.add_task(send_org_creation_email, data.email, "ServerDeck", data.name)
         
-        from app.services.tenant import get_user_resolved_modules
+        from app.services.tenant import get_user_resolved_modules, get_org_enabled_modules
         resolved = await get_user_resolved_modules(db, user, schema_name)
+        org_mods = await get_org_enabled_modules(db, schema_name)
         user_resp = UserResponse.model_validate(user)
         user_resp.enabled_modules = resolved
+        user_resp.org_modules = org_mods
 
         return TokenResponse(
             access_token=token,
@@ -169,10 +171,12 @@ async def register(data: UserCreate, background_tasks: BackgroundTasks, db: Asyn
     # Send welcome email asynchronously
     background_tasks.add_task(send_org_creation_email, data.email, org_key.capitalize(), data.name)
 
-    from app.services.tenant import get_user_resolved_modules
+    from app.services.tenant import get_user_resolved_modules, get_org_enabled_modules
     resolved = await get_user_resolved_modules(db, user, schema_name)
+    org_mods = await get_org_enabled_modules(db, schema_name)
     user_resp = UserResponse.model_validate(user)
     user_resp.enabled_modules = resolved
+    user_resp.org_modules = org_mods
 
     return TokenResponse(
         access_token=token,
@@ -227,10 +231,12 @@ async def login(data: UserLogin, db: AsyncSession = Depends(get_db)):
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Account disabled")
         await record_audit(db, user.id, None, "auth.login", details={"email": data.email})
         token = create_access_token(user, schema_name)
-        from app.services.tenant import get_user_resolved_modules
+        from app.services.tenant import get_user_resolved_modules, get_org_enabled_modules
         resolved = await get_user_resolved_modules(db, user, schema_name)
+        org_mods = await get_org_enabled_modules(db, schema_name)
         user_resp = UserResponse.model_validate(user)
         user_resp.enabled_modules = resolved
+        user_resp.org_modules = org_mods
         return TokenResponse(
             access_token=token,
             user=user_resp,
@@ -256,10 +262,12 @@ async def login(data: UserLogin, db: AsyncSession = Depends(get_db)):
     await record_audit(db, user.id, None, "auth.login", details={"email": data.email})
 
     token = create_access_token(user, schema_name)
-    from app.services.tenant import get_user_resolved_modules
+    from app.services.tenant import get_user_resolved_modules, get_org_enabled_modules
     resolved = await get_user_resolved_modules(db, user, schema_name)
+    org_mods = await get_org_enabled_modules(db, schema_name)
     user_resp = UserResponse.model_validate(user)
     user_resp.enabled_modules = resolved
+    user_resp.org_modules = org_mods
     return TokenResponse(
         access_token=token,
         user=user_resp,

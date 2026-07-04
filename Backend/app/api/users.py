@@ -44,13 +44,15 @@ async def get_my_profile(
 ):
     """Retrieve details and dynamically resolved modules for the logged in user."""
     from app.database import tenant_schema
-    from app.services.tenant import get_user_resolved_modules
+    from app.services.tenant import get_user_resolved_modules, get_org_enabled_modules
     
     schema_name = tenant_schema.get(None)
     resolved = await get_user_resolved_modules(db, user, schema_name)
+    org_mods = await get_org_enabled_modules(db, schema_name)
     
     resp = UserResponse.model_validate(user)
     resp.enabled_modules = resolved
+    resp.org_modules = org_mods
     return resp
 
 
@@ -77,13 +79,19 @@ async def update_user_modules(
             detail="Only the team owner can modify owner modules"
         )
 
-    target_user.enabled_modules = data.enabled_modules
+    from app.database import tenant_schema
+    from app.services.tenant import get_user_resolved_modules, get_org_enabled_modules
+    schema_name = tenant_schema.get(None)
+    org_modules = await get_org_enabled_modules(db, schema_name)
+
+    if data.enabled_modules is not None:
+        target_user.enabled_modules = [m for m in data.enabled_modules if m in org_modules]
+    else:
+        target_user.enabled_modules = None
+
     await db.commit()
     await db.refresh(target_user)
 
-    from app.database import tenant_schema
-    from app.services.tenant import get_user_resolved_modules
-    schema_name = tenant_schema.get(None)
     resolved = await get_user_resolved_modules(db, target_user, schema_name)
 
     resp = UserManagementResponse.model_validate(target_user)
