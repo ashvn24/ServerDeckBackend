@@ -30,6 +30,7 @@ async def create_ticket(
         description=data.description,
         priority=data.priority,
         created_by_id=user.id,
+        alert_id=data.alert_id,
     )
     db.add(ticket)
     await db.flush()

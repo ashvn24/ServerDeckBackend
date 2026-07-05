@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, update, desc, func
+from sqlalchemy.orm import selectinload
 from pydantic import BaseModel
 from typing import List, Optional
 import uuid
@@ -111,7 +112,8 @@ def _format_alert(record, rule, server, diagnosis=None):
         "triggered_at": record.triggered_at,
         "duration": duration.total_seconds(),
         "status": record.status.value,
-        "diagnosis": diag_data
+        "diagnosis": diag_data,
+        "ticket_id": record.ticket.id if record.ticket else None
     }
 
 @router.get("/api/alerts/summary")
@@ -158,6 +160,7 @@ async def get_all_active_alerts(db: AsyncSession = Depends(get_db)):
         .join(AlertRule, AlertRecord.rule_id == AlertRule.id)
         .join(Server, AlertRecord.server_id == Server.id)
         .outerjoin(AlertDiagnosis, AlertRecord.id == AlertDiagnosis.alert_record_id)
+        .options(selectinload(AlertRecord.ticket))
         .where(AlertRecord.status.in_([AlertStatus.active, AlertStatus.acknowledged]))
         .order_by(AlertRecord.triggered_at.desc())
     )
@@ -175,6 +178,7 @@ async def get_server_alerts(server_id: uuid.UUID, db: AsyncSession = Depends(get
         .join(AlertRule, AlertRecord.rule_id == AlertRule.id)
         .join(Server, AlertRecord.server_id == Server.id)
         .outerjoin(AlertDiagnosis, AlertRecord.id == AlertDiagnosis.alert_record_id)
+        .options(selectinload(AlertRecord.ticket))
         .where(AlertRecord.server_id == server_id)
         .order_by(AlertRecord.triggered_at.desc())
     )

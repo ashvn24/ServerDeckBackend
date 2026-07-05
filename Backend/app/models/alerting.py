@@ -63,6 +63,7 @@ class AlertRecord(Base):
     rule = relationship("AlertRule", back_populates="records")
     server = relationship("Server", back_populates="alert_records")
     diagnosis = relationship("AlertDiagnosis", uselist=False, back_populates="alert_record", cascade="all, delete-orphan")
+    ticket = relationship("Ticket", uselist=False, back_populates="alert")
 
 
 class AlertDiagnosis(Base):

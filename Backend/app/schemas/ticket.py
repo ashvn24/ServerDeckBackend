@@ -38,6 +38,7 @@ class TicketResponse(BaseModel):
     created_by: TicketSenderResponse
     assigned_to_id: Optional[UUID]
     assigned_to: Optional[TicketSenderResponse]
+    alert_id: Optional[UUID] = None
     created_at: datetime.datetime
     updated_at: datetime.datetime
 
@@ -52,6 +53,7 @@ class TicketCreate(BaseModel):
     title: str
     description: str
     priority: str = "Medium"
+    alert_id: Optional[UUID] = None
 
 class TicketUpdate(BaseModel):
     status: Optional[str] = None
