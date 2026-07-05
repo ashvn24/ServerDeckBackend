@@ -26,6 +26,8 @@ class UserResponse(BaseModel):
     role: str
     enabled_modules: list[str] | None = None
     org_modules: list[str] | None = None
+    two_factor_enabled: bool | None = False
+    two_factor_method: str | None = None
 
     model_config = {"from_attributes": True}
 

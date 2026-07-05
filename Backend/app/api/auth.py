@@ -8,7 +8,7 @@ from jose import jwt
 
 from app.config import get_settings
 from app.database import get_db, set_search_path, validate_schema_name
-from app.security import encode_token
+from app.security import encode_token, decode_token
 
 logger = logging.getLogger("serverdeck.auth")
 from app.models.user import User, Team
@@ -342,7 +342,7 @@ async def login_2fa(data: TwoFactorLoginRequest, db: AsyncSession = Depends(get_
     settings = get_settings()
 
     try:
-        payload = jwt.decode(data.mfa_token, settings.jwt_secret, algorithms=["HS256"])
+        payload = decode_token(data.mfa_token)
         if not payload.get("mfa_handshake"):
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid verification token.")
         user_id = payload.get("sub")
