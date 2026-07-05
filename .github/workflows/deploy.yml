@@ -21,7 +21,7 @@ jobs:
           script: |
             cd /coderepo/ServerDeckBackend
             git pull origin main
-            source /coderepo/ServerDeckBackend/venv/bin/activate
+            source /coderepo/ServerDeckBackend/venvsd/bin/activate
             pip install -r Backend/requirements.txt --quiet
             sudo systemctl daemon-reload
             sudo systemctl restart serverdeckapi.service
