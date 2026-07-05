@@ -15,7 +15,7 @@ jobs:
         uses: appleboy/ssh-action@v1.0.3
         with:
           # This tells GitHub to run the exact same deployment block across both hosts
-          host: ${{ secrets.EC2_HOST }},${{ secrets.EC2_HOST_2 }}
+          host: ${{ secrets.EC2_HOST }}
           username: ${{ secrets.EC2_USER }}
           key: ${{ secrets.EC2_SSH_KEY }}
           script: |
