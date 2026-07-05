@@ -226,3 +226,23 @@ async def send_invitation_email(to_email: str, inviter_name: str, invite_link: s
     
     html_content = Template(BASE_HTML_TEMPLATE).substitute(body_content=body)
     await send_email_async(to_email, subject, html_content)
+
+
+async def send_access_approved_email(to_email: str, user_name: str):
+    """
+    Sends a welcome/access-approved email after a waitlist request is approved.
+    """
+    settings = get_settings()
+    subject = "Your ServerDeck access request has been approved!"
+    
+    body = f"""
+        <h2>Welcome to ServerDeck, {user_name}!</h2>
+        <p>Your request for access has been approved by the platform owner.</p>
+        <p>You can now log in using the password you chose during signup.</p>
+        <div class="btn-wrapper">
+            <a href="{settings.ui_base_url}/login" class="btn">Log In</a>
+        </div>
+    """
+    
+    html_content = Template(BASE_HTML_TEMPLATE).substitute(body_content=body)
+    await send_email_async(to_email, subject, html_content)

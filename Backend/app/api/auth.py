@@ -279,14 +279,63 @@ async def login(data: UserLogin, db: AsyncSession = Depends(get_db)):
 
 @router.post("/waitlist", response_model=WaitlistResponse, status_code=status.HTTP_201_CREATED)
 async def join_waitlist(data: WaitlistCreate, db: AsyncSession = Depends(get_db)):
-    """Join the waitlist from the public landing page."""
+    """Join the waitlist/request access from the login or landing page."""
     # Check if they are already on the waitlist
     result = await db.execute(select(WaitlistRequest).where(WaitlistRequest.email == data.email))
     existing = result.scalar_one_or_none()
     if existing:
+        if data.name:
+            existing.name = data.name
+        if data.request_type:
+            existing.request_type = data.request_type
+        if data.org_name:
+            existing.org_name = data.org_name
+        if data.password:
+            existing.password_hash = pwd_context.hash(data.password)
+        await db.commit()
+        await db.refresh(existing)
         return existing
 
-    waitlist_req = WaitlistRequest(email=data.email)
+    # Check if email is already registered in individual schema
+    from app.services.tenant import INDIVIDUAL_SCHEMA, ensure_individual_schema_exists, get_org_key_from_email
+    await ensure_individual_schema_exists(db)
+    await set_search_path(db, INDIVIDUAL_SCHEMA)
+    user_result = await db.execute(select(User).where(User.email == data.email))
+    if user_result.scalar_one_or_none():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Email is already registered as a personal user."
+        )
+
+    # Check if email belongs to an organization domain and if organization user already exists
+    org_key = get_org_key_from_email(data.email)
+    if org_key and org_key != "individual":
+        # Switch path to public schema to check Organization
+        await set_search_path(db, "public")
+        org_result = await db.execute(select(Organization).where(Organization.org_key == org_key))
+        org = org_result.scalar_one_or_none()
+        if org:
+            await set_search_path(db, org.schema_name)
+            org_user_result = await db.execute(select(User).where(User.email == data.email))
+            if org_user_result.scalar_one_or_none():
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Email is already registered under your organization. Please ask your admin for an invite."
+                )
+
+    # Hashing password if provided
+    password_hash = pwd_context.hash(data.password) if data.password else None
+
+    # Reset search path to public for public schema operations
+    await set_search_path(db, "public")
+
+    waitlist_req = WaitlistRequest(
+        email=data.email,
+        name=data.name,
+        request_type=data.request_type,
+        org_name=data.org_name,
+        password_hash=password_hash
+    )
     db.add(waitlist_req)
     await db.commit()
     await db.refresh(waitlist_req)

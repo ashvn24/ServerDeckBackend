@@ -20,8 +20,27 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup: launch the background alerting task. Schema migrations are NOT
-    # run here — apply them at deploy time with migrate_tenants.py.
+    # Startup: Run schema migrations automatically on startup
+    try:
+        from alembic import command
+        from gen_migration import make_config, set_scope_env
+        from migrate_tenants import list_tenant_schemas
+        
+        logger.info("Auto-migrating public schema...")
+        cfg = make_config()
+        set_scope_env(tenant=False, tenant_schema="")
+        command.upgrade(cfg, "head")
+        
+        schemas = await list_tenant_schemas()
+        for schema in schemas:
+            logger.info(f"Auto-migrating tenant schema: {schema}")
+            set_scope_env(tenant=True, tenant_schema=schema)
+            command.upgrade(cfg, "head")
+        logger.info("Auto-migration completed successfully.")
+    except Exception as exc:
+        logger.error(f"Auto-migration failed: {exc}")
+
+    # Startup: launch the background alerting task.
     alert_task = asyncio.create_task(check_alerts())
     logger.info("ServerDeck API started — alerting task running")
     yield

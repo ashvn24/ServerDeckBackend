@@ -5,7 +5,7 @@ Endpoints for managing organizations and their initial superadmin users.
 import logging
 import secrets
 import traceback
-from app.services.email_service import send_org_creation_email
+from app.services.email_service import send_org_creation_email, send_access_approved_email
 from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -595,6 +595,8 @@ async def list_waitlist(
     invite_result = await db.execute(select(UserInvite.email).where(UserInvite.email.in_(emails)))
     invited_emails = set(invite_result.scalars().all())
     
+    await set_search_path(db, "public")
+    
     response = []
     for req in requests:
         status = "invited" if req.email in invited_emails else "pending"
@@ -602,6 +604,9 @@ async def list_waitlist(
             WaitlistResponse(
                 id=req.id, 
                 email=req.email, 
+                name=req.name,
+                request_type=req.request_type,
+                org_name=req.org_name,
                 created_at=req.created_at, 
                 status=status
             )
@@ -631,73 +636,195 @@ async def approve_waitlist(
     platform_user: PlatformUser = Depends(require_platform_owner),
     db: AsyncSession = Depends(get_db)
 ):
-    """Approve a waitlist request by creating an individual user account and sending an invite. If invited, resends."""
+    """Approve a waitlist request.
+    If it's an organization request, provisions the schema and admin user.
+    If it's a personal request with password_hash, directly provisions.
+    Else (legacy waitlist), falls back to sending an invite link."""
+    # Ensure starting in public schema
+    await set_search_path(db, "public")
+
     result = await db.execute(select(WaitlistRequest).where(WaitlistRequest.id == request_id))
     req = result.scalar_one_or_none()
     if not req:
         raise HTTPException(status_code=404, detail="Waitlist request not found")
 
     email = req.email
-    name = email.split("@")[0].title()
+    name = req.name or email.split("@")[0].title()
 
-    from app.services.tenant import INDIVIDUAL_SCHEMA, ensure_individual_schema_exists
-    import datetime
-    import secrets
-    from app.config import get_settings
-    from app.services.email_service import send_invitation_email
-    settings = get_settings()
+    # ── CASE 1: Organization Request ──────────────────────────────────────────
+    if req.request_type == "organization":
+        org_name = req.org_name or f"{name}'s Org"
+        import re
+        org_key = re.sub(r"[^a-z0-9_]", "", org_name.lower().replace(" ", "_"))
+        if not org_key:
+            import secrets
+            org_key = f"org_{secrets.token_hex(4)}"
 
-    await ensure_individual_schema_exists(db)
-    await set_search_path(db, INDIVIDUAL_SCHEMA)
+        schema_name = f"tenant_{org_key}"
+        domain = email.split("@")[1].strip().lower()
 
-    user_result = await db.execute(select(User).where(User.email == email))
-    if user_result.scalar_one_or_none():
-        # If they already registered, we can just delete the waitlist request here
-        await db.delete(req)
+        # Check domain / key uniqueness
+        org_res = await db.execute(select(Organization).where((Organization.org_key == org_key) | (Organization.domain == domain)))
+        existing_org = org_res.scalar_one_or_none()
+        if existing_org:
+            import secrets
+            org_key = f"{org_key}_{secrets.token_hex(2)}"
+            schema_name = f"tenant_{org_key}"
+
+        # Create organization record
+        org = Organization(
+            name=org_name,
+            domain=domain,
+            org_key=org_key,
+            schema_name=schema_name,
+        )
+        db.add(org)
         await db.commit()
-        raise HTTPException(status_code=400, detail="User already exists")
 
-    # Check for existing invite
-    existing_invite_res = await db.execute(select(UserInvite).where(UserInvite.email == email))
-    existing_invite = existing_invite_res.scalar_one_or_none()
-    
-    if existing_invite:
-        # Resend scenario
-        token = existing_invite.token
-        existing_invite.expires_at = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=7)
-    else:
-        # Create their personal Team
-        team = Team(name=f"{name}'s Workspace")
+        # Provision schema + run migrations
+        from app.services.tenant import create_tenant_schema, run_tenant_migrations
+        try:
+            await create_tenant_schema(schema_name, db)
+            run_tenant_migrations(schema_name)
+        except Exception as e:
+            logger.error(f"Failed to initialize schema {schema_name}: {e}")
+            await db.execute(
+                text("DROP SCHEMA IF EXISTS " + validate_schema_name(schema_name) + " CASCADE")
+            )
+            await db.delete(org)
+            await db.commit()
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to initialize organization schema."
+            )
+
+        # Create the org superadmin user inside the tenant schema
+        await set_search_path(db, schema_name)
+        team = Team(name=f"{org_name} Team")
         db.add(team)
         await db.flush()
 
-        # Create invite token
-        token = f"{secrets.token_urlsafe(32)}:individual"
-        existing_invite = UserInvite(
+        import secrets
+        password_hash = req.password_hash or pwd_context.hash(secrets.token_urlsafe(12))
+
+        admin_user = User(
             email=email,
-            role="owner",
+            password_hash=password_hash,
+            name=name,
             team_id=team.id,
-            token=token,
-            expires_at=datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=7)
+            role="owner",
+            is_active=True
         )
-        db.add(existing_invite)
+        db.add(admin_user)
+        
+        # Reset path to public to delete waitlist req
+        await set_search_path(db, "public")
+        await db.delete(req)
+        await db.commit()
 
-    # Note: We do NOT delete the waitlist request here anymore.
-    # It will be deleted when they actually accept the invite.
-    await db.commit()
+        background_tasks.add_task(send_org_creation_email, email, org_name, name)
 
-    invite_url = f"{settings.ui_base_url}/invite?token={token}"
+        return IndividualUserInviteResponse(
+            message=f"Organization '{org_name}' provisioned and welcome email sent."
+        )
 
-    background_tasks.add_task(
-        send_invitation_email,
-        to_email=email,
-        inviter_name=platform_user.name,
-        invite_link=invite_url,
-        org_name="ServerDeck Personal"
-    )
+    # ── CASE 2: Personal Request with Direct Provisioning ────────────────────
+    elif req.request_type == "personal" and req.password_hash:
+        from app.services.tenant import INDIVIDUAL_SCHEMA, ensure_individual_schema_exists
 
-    return IndividualUserInviteResponse(
-        message="Waitlist approved and invitation sent successfully",
-        token=token,
-        invite_url=invite_url
-    )
+        await ensure_individual_schema_exists(db)
+        await set_search_path(db, INDIVIDUAL_SCHEMA)
+
+        # Check if user already exists
+        user_result = await db.execute(select(User).where(User.email == email))
+        if user_result.scalar_one_or_none():
+            await set_search_path(db, "public")
+            await db.delete(req)
+            await db.commit()
+            raise HTTPException(status_code=400, detail="User already exists")
+
+        # Create personal team & user
+        team = Team(name=f"{name}'s Team")
+        db.add(team)
+        await db.flush()
+
+        user = User(
+            email=email,
+            password_hash=req.password_hash,
+            name=name,
+            team_id=team.id,
+            role="owner",
+            is_active=True
+        )
+        db.add(user)
+
+        # Reset path to public to delete waitlist req
+        await set_search_path(db, "public")
+        await db.delete(req)
+        await db.commit()
+
+        background_tasks.add_task(send_access_approved_email, email, name)
+
+        return IndividualUserInviteResponse(
+            message="Personal user account provisioned successfully and welcome email sent."
+        )
+
+    # ── CASE 3: Legacy Waitlist (No password hash, send invite URL) ──────────
+    else:
+        from app.services.tenant import INDIVIDUAL_SCHEMA, ensure_individual_schema_exists
+        from app.services.email_service import send_invitation_email
+        import datetime
+        import secrets
+        from app.config import get_settings
+        settings = get_settings()
+
+        await ensure_individual_schema_exists(db)
+        await set_search_path(db, INDIVIDUAL_SCHEMA)
+
+        user_result = await db.execute(select(User).where(User.email == email))
+        if user_result.scalar_one_or_none():
+            await set_search_path(db, "public")
+            await db.delete(req)
+            await db.commit()
+            raise HTTPException(status_code=400, detail="User already exists")
+
+        existing_invite_res = await db.execute(select(UserInvite).where(UserInvite.email == email))
+        existing_invite = existing_invite_res.scalar_one_or_none()
+
+        if existing_invite:
+            token = existing_invite.token
+            existing_invite.expires_at = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=7)
+        else:
+            team = Team(name=f"{name}'s Workspace")
+            db.add(team)
+            await db.flush()
+
+            token = f"{secrets.token_urlsafe(32)}:individual"
+            existing_invite = UserInvite(
+                email=email,
+                role="owner",
+                team_id=team.id,
+                token=token,
+                expires_at=datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=7)
+            )
+            db.add(existing_invite)
+
+        # Reset path to public to commit
+        await set_search_path(db, "public")
+        await db.commit()
+
+        invite_url = f"{settings.ui_base_url}/invite?token={token}"
+
+        background_tasks.add_task(
+            send_invitation_email,
+            to_email=email,
+            inviter_name=platform_user.name,
+            invite_link=invite_url,
+            org_name="ServerDeck Personal"
+        )
+
+        return IndividualUserInviteResponse(
+            message="Waitlist approved and invitation sent successfully",
+            token=token,
+            invite_url=invite_url
+        )

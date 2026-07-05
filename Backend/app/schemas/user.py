@@ -117,8 +117,8 @@ class IndividualUserCreate(BaseModel):
 
 class IndividualUserInviteResponse(BaseModel):
     message: str
-    token: str
-    invite_url: str
+    token: str | None = None
+    invite_url: str | None = None
 
 
 class IndividualUserResponse(BaseModel):
@@ -136,10 +136,17 @@ class IndividualUserResponse(BaseModel):
 
 class WaitlistCreate(BaseModel):
     email: EmailStr
+    name: str | None = None
+    request_type: str | None = None
+    org_name: str | None = None
+    password: str | None = None
 
 class WaitlistResponse(BaseModel):
     id: UUID
     email: str
+    name: str | None = None
+    request_type: str | None = None
+    org_name: str | None = None
     status: str = "pending"
     created_at: datetime.datetime
 
