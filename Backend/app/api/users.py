@@ -301,10 +301,20 @@ async def setup_2fa(
         secret = generate_base32_secret()
         # Create standard OTPAuth URI for authenticator apps
         otpauth_uri = f"otpauth://totp/ServerDeck:{user.email}?secret={secret}&issuer=ServerDeck"
-        # Generate Google Charts QR code URL
-        import urllib.parse
-        encoded_uri = urllib.parse.quote(otpauth_uri)
-        qr_code_url = f"https://chart.googleapis.com/chart?chs=200x200&chld=M|0&cht=qr&chl={encoded_uri}"
+        
+        # Generate QR code locally as a base64 PNG data URL
+        import qrcode
+        import io
+        import base64
+        
+        qr = qrcode.QRCode(version=1, box_size=10, border=4)
+        qr.add_data(otpauth_uri)
+        qr.make(fit=True)
+        img = qr.make_image(fill_color="black", back_color="white")
+        buffered = io.BytesIO()
+        img.save(buffered, format="PNG")
+        qr_code_base64 = base64.b64encode(buffered.getvalue()).decode()
+        qr_code_url = f"data:image/png;base64,{qr_code_base64}"
         
         return {
             "method": "totp",
