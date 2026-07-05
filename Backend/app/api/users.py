@@ -8,7 +8,7 @@ from passlib.hash import bcrypt
 from app.database import get_db
 from app.middleware.auth import get_current_user, require_admin, require_owner, require_support
 from app.models.user import User, UserInvite
-from app.schemas.user import UserInviteCreate, UserAcceptInvite, UserManagementResponse, UserDirectCreate, UserResponse, UserModulesUpdate, PasswordChangeRequest
+from app.schemas.user import UserInviteCreate, UserAcceptInvite, UserManagementResponse, UserDirectCreate, UserResponse, UserModulesUpdate, PasswordChangeRequest, TwoFactorSetupRequest, TwoFactorVerifyRequest, TwoFactorDisableRequest
 
 router = APIRouter(prefix="/api/users", tags=["users"])
 
@@ -270,3 +270,221 @@ async def change_password(
     user.password_hash = bcrypt.hash(data.new_password)
     await db.commit()
     return {"message": "Password changed successfully"}
+
+
+@router.post("/2fa/setup")
+async def setup_2fa(
+    data: TwoFactorSetupRequest,
+    background_tasks: BackgroundTasks,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Initiate Two-Factor Authentication setup.
+    If method is 'totp', returns a generated secret and Google Charts QR code URL.
+    If method is 'email', generates and sends a verification OTP to the user's email.
+    """
+    if user.two_factor_enabled:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Two-factor authentication is already enabled."
+        )
+
+    if data.method not in ("totp", "email"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid 2FA method. Choose 'totp' or 'email'."
+        )
+
+    if data.method == "totp":
+        from app.services.totp import generate_base32_secret
+        secret = generate_base32_secret()
+        # Create standard OTPAuth URI for authenticator apps
+        otpauth_uri = f"otpauth://totp/ServerDeck:{user.email}?secret={secret}&issuer=ServerDeck"
+        # Generate Google Charts QR code URL
+        import urllib.parse
+        encoded_uri = urllib.parse.quote(otpauth_uri)
+        qr_code_url = f"https://chart.googleapis.com/chart?chs=200x200&chld=M|0&cht=qr&chl={encoded_uri}"
+        
+        return {
+            "method": "totp",
+            "secret": secret,
+            "qr_code_url": qr_code_url
+        }
+    
+    elif data.method == "email":
+        import secrets
+        import datetime
+        from app.services.email_service import send_otp_email
+        
+        code = f"{secrets.randbelow(1000000):06d}"
+        expires_at = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(minutes=5)
+        
+        # Save OTP hash in user record (using bcrypt for secure hash)
+        user.two_factor_otp_secret = bcrypt.hash(code)
+        user.two_factor_otp_expires_at = expires_at
+        await db.commit()
+        
+        # Send OTP
+        background_tasks.add_task(
+            send_otp_email,
+            to_email=user.email,
+            name=user.name,
+            code=code
+        )
+        
+        return {
+            "method": "email",
+            "message": "Verification code sent to your email."
+        }
+
+
+@router.post("/2fa/verify")
+async def verify_2fa(
+    data: TwoFactorVerifyRequest,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Verify and enable Two-Factor Authentication.
+    """
+    if user.two_factor_enabled:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Two-factor authentication is already enabled."
+        )
+
+    if data.method not in ("totp", "email"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid 2FA method."
+        )
+
+    if data.method == "totp":
+        if not data.secret:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Secret key is required for TOTP verification."
+            )
+            
+        from app.services.totp import verify_totp
+        if not verify_totp(data.secret, data.code):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid verification code."
+            )
+            
+        user.two_factor_enabled = True
+        user.two_factor_method = "totp"
+        user.two_factor_secret = data.secret
+        user.two_factor_otp_secret = None
+        user.two_factor_otp_expires_at = None
+        await db.commit()
+        
+        return {"message": "Two-factor authentication via Authenticator App enabled."}
+
+    elif data.method == "email":
+        if not user.two_factor_otp_secret or not user.two_factor_otp_expires_at:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="No pending verification request found."
+            )
+            
+        import datetime
+        if user.two_factor_otp_expires_at < datetime.datetime.now(datetime.timezone.utc):
+            user.two_factor_otp_secret = None
+            user.two_factor_otp_expires_at = None
+            await db.commit()
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Verification code has expired. Please try again."
+            )
+            
+        if not bcrypt.verify(data.code, user.two_factor_otp_secret):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid verification code."
+            )
+            
+        user.two_factor_enabled = True
+        user.two_factor_method = "email"
+        user.two_factor_secret = None
+        user.two_factor_otp_secret = None
+        user.two_factor_otp_expires_at = None
+        await db.commit()
+        
+        return {"message": "Two-factor authentication via Email OTP enabled."}
+
+
+@router.post("/2fa/disable")
+async def disable_2fa(
+    data: TwoFactorDisableRequest,
+    background_tasks: BackgroundTasks,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Disable Two-Factor Authentication.
+    """
+    if not user.two_factor_enabled:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Two-factor authentication is not enabled."
+        )
+
+    if user.two_factor_method == "email" and data.code == "send_otp":
+        import secrets
+        import datetime
+        from app.services.email_service import send_otp_email
+        
+        code = f"{secrets.randbelow(1000000):06d}"
+        expires_at = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(minutes=5)
+        
+        user.two_factor_otp_secret = bcrypt.hash(code)
+        user.two_factor_otp_expires_at = expires_at
+        await db.commit()
+        
+        background_tasks.add_task(
+            send_otp_email,
+            to_email=user.email,
+            name=user.name,
+            code=code
+        )
+        return {"mfa_challenge_sent": True, "message": "Verification code sent to your email."}
+
+    # Verify code
+    if user.two_factor_method == "totp":
+        from app.services.totp import verify_totp
+        if not verify_totp(user.two_factor_secret, data.code):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid verification code."
+            )
+    elif user.two_factor_method == "email":
+        if not user.two_factor_otp_secret or not user.two_factor_otp_expires_at:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="No active verification code. Request a code first."
+            )
+            
+        import datetime
+        if user.two_factor_otp_expires_at < datetime.datetime.now(datetime.timezone.utc):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Verification code has expired. Request a new code."
+            )
+            
+        if not bcrypt.verify(data.code, user.two_factor_otp_secret):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid verification code."
+            )
+
+    user.two_factor_enabled = False
+    user.two_factor_method = None
+    user.two_factor_secret = None
+    user.two_factor_otp_secret = None
+    user.two_factor_otp_expires_at = None
+    await db.commit()
+    
+    return {"message": "Two-factor authentication disabled."}

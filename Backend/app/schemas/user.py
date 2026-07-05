@@ -71,10 +71,13 @@ class PlatformUserResponse(BaseModel):
 
 
 class TokenResponse(BaseModel):
-    access_token: str
+    access_token: str | None = None
     token_type: str = "bearer"
-    user: UserResponse | PlatformUserResponse
+    user: UserResponse | PlatformUserResponse | None = None
     is_platform_owner: bool = False
+    mfa_required: bool = False
+    mfa_token: str | None = None
+    mfa_method: str | None = None
 
 
 # ---- Admin / Org schemas ----
@@ -165,4 +168,22 @@ class ForgotPasswordRequest(BaseModel):
 class PasswordResetRequest(BaseModel):
     token: str
     new_password: str = PasswordStr
+
+
+# ---- Two-Factor Authentication schemas ----
+
+class TwoFactorSetupRequest(BaseModel):
+    method: str  # "totp" | "email"
+
+class TwoFactorVerifyRequest(BaseModel):
+    method: str
+    code: str
+    secret: str | None = None
+
+class TwoFactorDisableRequest(BaseModel):
+    code: str
+
+class TwoFactorLoginRequest(BaseModel):
+    mfa_token: str
+    code: str
 

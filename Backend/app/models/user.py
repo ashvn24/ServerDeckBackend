@@ -32,6 +32,11 @@ class User(Base):
     role: Mapped[str] = mapped_column(String(50), default="owner")  # owner | admin | support | member
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     enabled_modules: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
+    two_factor_enabled: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    two_factor_method: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    two_factor_secret: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    two_factor_otp_secret: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    two_factor_otp_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
     # Relationships

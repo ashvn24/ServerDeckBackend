@@ -269,3 +269,28 @@ async def send_password_reset_email(to_email: str, name: str, reset_link: str):
     
     html_content = Template(BASE_HTML_TEMPLATE).substitute(body_content=body)
     await send_email_async(to_email, subject, html_content)
+
+
+async def send_otp_email(to_email: str, name: str, code: str):
+    """
+    Sends a two-factor verification OTP code email.
+    """
+    subject = f"{code} is your ServerDeck verification code"
+    
+    body = f"""
+        <h2>Two-Factor Verification</h2>
+        <p>Hello {name},</p>
+        <p>A request was made to access your ServerDeck account.</p>
+        <p>Please use the following 6-digit one-time code to complete your log in. This code is valid for 5 minutes.</p>
+        <div class="btn-wrapper" style="text-align: center; margin: 30px 0;">
+            <span style="font-family: monospace; font-size: 32px; font-weight: 900; letter-spacing: 6px; color: #8b5cf6; background: rgba(139, 92, 246, 0.05); padding: 12px 24px; border-radius: 12px; border: 1px solid rgba(139, 92, 246, 0.2); display: inline-block;">
+                {code}
+            </span>
+        </div>
+        <p style="font-size: 13px; color: #9ca3af; text-align: center; margin-top: 20px;">
+            If you did not request this login, please change your password immediately.
+        </p>
+    """
+    
+    html_content = Template(BASE_HTML_TEMPLATE).substitute(body_content=body)
+    await send_email_async(to_email, subject, html_content)

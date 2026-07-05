@@ -13,7 +13,7 @@ from app.security import encode_token
 logger = logging.getLogger("serverdeck.auth")
 from app.models.user import User, Team
 from app.models.organization import Organization, PlatformUser, WaitlistRequest, PasswordResetToken
-from app.schemas.user import UserCreate, UserLogin, TokenResponse, UserResponse, PlatformUserResponse, WaitlistCreate, WaitlistResponse, ForgotPasswordRequest, PasswordResetRequest
+from app.schemas.user import UserCreate, UserLogin, TokenResponse, UserResponse, PlatformUserResponse, WaitlistCreate, WaitlistResponse, ForgotPasswordRequest, PasswordResetRequest, TwoFactorLoginRequest
 from app.services.tenant import INDIVIDUAL_SCHEMA
 from app.services.audit import record_audit
 
@@ -41,6 +41,18 @@ def create_platform_owner_token(platform_user: PlatformUser) -> str:
         "team_id": None,
         "tenant_schema": "public",
         "is_platform_owner": True,
+        "exp": expire,
+    }
+    return encode_token(payload)
+
+
+def create_mfa_token(user: User, tenant_schema: str) -> str:
+    expire = datetime.now(timezone.utc) + timedelta(minutes=5)
+    payload = {
+        "sub": str(user.id),
+        "email": user.email,
+        "tenant_schema": tenant_schema,
+        "mfa_handshake": True,
         "exp": expire,
     }
     return encode_token(payload)
@@ -186,7 +198,7 @@ async def register(data: UserCreate, background_tasks: BackgroundTasks, db: Asyn
 
 
 @router.post("/login", response_model=TokenResponse)
-async def login(data: UserLogin, db: AsyncSession = Depends(get_db)):
+async def login(data: UserLogin, background_tasks: BackgroundTasks, db: AsyncSession = Depends(get_db)):
     from app.services.tenant import get_org_key_from_email
     from sqlalchemy import text
 
@@ -229,6 +241,29 @@ async def login(data: UserLogin, db: AsyncSession = Depends(get_db)):
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid email or password")
         if not user.is_active:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Account disabled")
+
+        if user.two_factor_enabled:
+            mfa_token = create_mfa_token(user, schema_name)
+            if user.two_factor_method == "email":
+                import secrets
+                import datetime
+                from app.services.email_service import send_otp_email
+                code = f"{secrets.randbelow(1000000):06d}"
+                user.two_factor_otp_secret = pwd_context.hash(code)
+                user.two_factor_otp_expires_at = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(minutes=5)
+                await db.commit()
+                background_tasks.add_task(
+                    send_otp_email,
+                    to_email=user.email,
+                    name=user.name,
+                    code=code
+                )
+            return TokenResponse(
+                mfa_required=True,
+                mfa_token=mfa_token,
+                mfa_method=user.two_factor_method
+            )
+
         await record_audit(db, user.id, None, "auth.login", details={"email": data.email})
         token = create_access_token(user, schema_name)
         from app.services.tenant import get_user_resolved_modules, get_org_enabled_modules
@@ -259,6 +294,28 @@ async def login(data: UserLogin, db: AsyncSession = Depends(get_db)):
     if not user.is_active:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Account disabled")
 
+    if user.two_factor_enabled:
+        mfa_token = create_mfa_token(user, schema_name)
+        if user.two_factor_method == "email":
+            import secrets
+            import datetime
+            from app.services.email_service import send_otp_email
+            code = f"{secrets.randbelow(1000000):06d}"
+            user.two_factor_otp_secret = pwd_context.hash(code)
+            user.two_factor_otp_expires_at = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(minutes=5)
+            await db.commit()
+            background_tasks.add_task(
+                send_otp_email,
+                to_email=user.email,
+                name=user.name,
+                code=code
+            )
+        return TokenResponse(
+            mfa_required=True,
+            mfa_token=mfa_token,
+            mfa_method=user.two_factor_method
+        )
+
     await record_audit(db, user.id, None, "auth.login", details={"email": data.email})
 
     token = create_access_token(user, schema_name)
@@ -268,6 +325,78 @@ async def login(data: UserLogin, db: AsyncSession = Depends(get_db)):
     user_resp = UserResponse.model_validate(user)
     user_resp.enabled_modules = resolved
     user_resp.org_modules = org_mods
+    return TokenResponse(
+        access_token=token,
+        user=user_resp,
+        is_platform_owner=False,
+    )
+
+
+@router.post("/login/2fa", response_model=TokenResponse)
+async def login_2fa(data: TwoFactorLoginRequest, db: AsyncSession = Depends(get_db)):
+    """
+    Verify the 2FA code and return full login tokens.
+    """
+    from jose import jwt
+    from app.config import get_settings
+    settings = get_settings()
+
+    try:
+        payload = jwt.decode(data.mfa_token, settings.jwt_secret, algorithms=["HS256"])
+        if not payload.get("mfa_handshake"):
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid verification token.")
+        user_id = payload.get("sub")
+        email = payload.get("email")
+        schema_name = payload.get("tenant_schema")
+    except Exception:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired verification token.")
+
+    # Switch path to user schema
+    await set_search_path(db, schema_name)
+
+    # Fetch user
+    import uuid
+    user_uuid = uuid.UUID(user_id)
+    result = await db.execute(select(User).where(User.id == user_uuid))
+    user = result.scalar_one_or_none()
+    if not user or not user.is_active or not user.two_factor_enabled:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid user or 2FA not enabled.")
+
+    # Verify code
+    if user.two_factor_method == "totp":
+        from app.services.totp import verify_totp
+        if not verify_totp(user.two_factor_secret, data.code):
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid verification code.")
+    elif user.two_factor_method == "email":
+        if not user.two_factor_otp_secret or not user.two_factor_otp_expires_at:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No active verification code found.")
+
+        import datetime
+        if user.two_factor_otp_expires_at < datetime.datetime.now(datetime.timezone.utc):
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Verification code has expired.")
+
+        if not pwd_context.verify(data.code, user.two_factor_otp_secret):
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid verification code.")
+
+        # Clear OTP values
+        user.two_factor_otp_secret = None
+        user.two_factor_otp_expires_at = None
+        await db.flush()
+
+    await record_audit(db, user.id, None, "auth.login.2fa", details={"email": email})
+
+    token = create_access_token(user, schema_name)
+    from app.services.tenant import get_user_resolved_modules, get_org_enabled_modules
+    resolved = await get_user_resolved_modules(db, user, schema_name)
+    org_mods = await get_org_enabled_modules(db, schema_name)
+    user_resp = UserResponse.model_validate(user)
+    user_resp.enabled_modules = resolved
+    user_resp.org_modules = org_mods
+
+    # Revert to public to commit
+    await set_search_path(db, "public")
+    await db.commit()
+
     return TokenResponse(
         access_token=token,
         user=user_resp,
