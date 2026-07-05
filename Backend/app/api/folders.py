@@ -50,6 +50,21 @@ async def delete_folder(
     if not folder:
         raise HTTPException(status_code=404, detail="Folder not found")
         
+    # Unlink any servers inside this folder
+    from sqlalchemy import update
+    await db.execute(
+        update(Server)
+        .where(Server.folder_id == folder_id)
+        .values(folder_id=None)
+    )
+    
+    # Reparent child folders to parent's level
+    await db.execute(
+        update(ServerFolder)
+        .where(ServerFolder.parent_id == folder_id)
+        .values(parent_id=folder.parent_id)
+    )
+    
     await db.delete(folder)
     await db.commit()
 
