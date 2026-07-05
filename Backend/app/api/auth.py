@@ -12,8 +12,8 @@ from app.security import encode_token
 
 logger = logging.getLogger("serverdeck.auth")
 from app.models.user import User, Team
-from app.models.organization import Organization, PlatformUser, WaitlistRequest
-from app.schemas.user import UserCreate, UserLogin, TokenResponse, UserResponse, PlatformUserResponse, WaitlistCreate, WaitlistResponse
+from app.models.organization import Organization, PlatformUser, WaitlistRequest, PasswordResetToken
+from app.schemas.user import UserCreate, UserLogin, TokenResponse, UserResponse, PlatformUserResponse, WaitlistCreate, WaitlistResponse, ForgotPasswordRequest, PasswordResetRequest
 from app.services.tenant import INDIVIDUAL_SCHEMA
 from app.services.audit import record_audit
 
@@ -340,3 +340,133 @@ async def join_waitlist(data: WaitlistCreate, db: AsyncSession = Depends(get_db)
     await db.commit()
     await db.refresh(waitlist_req)
     return waitlist_req
+
+
+@router.post("/forgot-password")
+async def forgot_password(
+    data: ForgotPasswordRequest,
+    background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db)
+):
+    """Request a password reset link by email."""
+    # Prevent user enumeration: if anything fails, return success anyway.
+    success_resp = {"message": "If this email is registered, a password reset link has been sent."}
+
+    from app.services.tenant import get_org_key_from_email, INDIVIDUAL_SCHEMA, ensure_individual_schema_exists
+    from app.services.email_service import send_password_reset_email
+
+    email = data.email.strip().lower()
+    org_key = get_org_key_from_email(email)
+    if not org_key:
+        return success_resp
+
+    schema_name = INDIVIDUAL_SCHEMA
+    if org_key != "individual":
+        # Switch path to public schema to check Organization
+        await set_search_path(db, "public")
+        org_result = await db.execute(select(Organization).where(Organization.org_key == org_key))
+        org = org_result.scalar_one_or_none()
+        if not org:
+            return success_resp
+        schema_name = org.schema_name
+
+    # Set path to target schema to verify user exists
+    await set_search_path(db, schema_name)
+    user_result = await db.execute(select(User).where(User.email == email))
+    user = user_result.scalar_one_or_none()
+    if not user:
+        return success_resp
+
+    # Reset search path to public to save token
+    await set_search_path(db, "public")
+
+    # Generate token
+    import secrets
+    import datetime
+    token = secrets.token_urlsafe(32)
+    expires_at = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=1)
+
+    # Delete any existing active reset tokens for this email to avoid duplicates
+    existing_tokens = await db.execute(
+        select(PasswordResetToken).where(PasswordResetToken.email == email)
+    )
+    for tok in existing_tokens.scalars().all():
+        await db.delete(tok)
+
+    reset_token = PasswordResetToken(
+        email=email,
+        schema_name=schema_name,
+        token=token,
+        expires_at=expires_at
+    )
+    db.add(reset_token)
+    await db.commit()
+
+    # Send email
+    reset_link = f"{settings.ui_base_url}/reset-password?token={token}"
+    background_tasks.add_task(
+        send_password_reset_email,
+        to_email=email,
+        name=user.name,
+        reset_link=reset_link
+    )
+
+    return success_resp
+
+
+@router.post("/reset-password")
+async def reset_password(
+    data: PasswordResetRequest,
+    db: AsyncSession = Depends(get_db)
+):
+    """Reset user password using a valid reset token."""
+    # Ensure starting in public schema
+    await set_search_path(db, "public")
+
+    result = await db.execute(
+        select(PasswordResetToken).where(PasswordResetToken.token == data.token)
+    )
+    reset_token = result.scalar_one_or_none()
+    if not reset_token:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid or expired reset token."
+        )
+
+    # Check expiration
+    import datetime
+    if reset_token.expires_at < datetime.datetime.now(datetime.timezone.utc):
+        await db.delete(reset_token)
+        await db.commit()
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid or expired reset token."
+        )
+
+    # Switch search path to target schema
+    await set_search_path(db, reset_token.schema_name)
+
+    # Fetch and update user
+    user_result = await db.execute(
+        select(User).where(User.email == reset_token.email)
+    )
+    user = user_result.scalar_one_or_none()
+    if not user:
+        # Revert path to public to delete token
+        await set_search_path(db, "public")
+        await db.delete(reset_token)
+        await db.commit()
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid or expired reset token."
+        )
+
+    user.password_hash = pwd_context.hash(data.new_password)
+    await db.flush()
+
+    # Revert path to public to delete token & commit
+    await set_search_path(db, "public")
+    await db.delete(reset_token)
+    await db.commit()
+
+    return {"message": "Password reset successfully. You can now log in."}

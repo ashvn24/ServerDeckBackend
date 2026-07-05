@@ -246,3 +246,26 @@ async def send_access_approved_email(to_email: str, user_name: str):
     
     html_content = Template(BASE_HTML_TEMPLATE).substitute(body_content=body)
     await send_email_async(to_email, subject, html_content)
+
+
+async def send_password_reset_email(to_email: str, name: str, reset_link: str):
+    """
+    Sends a password reset email containing a secure link.
+    """
+    subject = "Reset your ServerDeck password"
+    
+    body = f"""
+        <h2>Password Reset Request</h2>
+        <p>Hello {name},</p>
+        <p>We received a request to reset the password associated with your ServerDeck account.</p>
+        <p>Click the button below to choose a new password. This link will expire in 1 hour.</p>
+        <div class="btn-wrapper">
+            <a href="{reset_link}" class="btn">Reset Password</a>
+        </div>
+        <p style="font-size: 13px; color: #9ca3af; text-align: center; margin-top: 20px;">
+            If you did not request a password reset, you can safely ignore this email.
+        </p>
+    """
+    
+    html_content = Template(BASE_HTML_TEMPLATE).substitute(body_content=body)
+    await send_email_async(to_email, subject, html_content)

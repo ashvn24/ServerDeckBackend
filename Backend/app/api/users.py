@@ -8,7 +8,7 @@ from passlib.hash import bcrypt
 from app.database import get_db
 from app.middleware.auth import get_current_user, require_admin, require_owner, require_support
 from app.models.user import User, UserInvite
-from app.schemas.user import UserInviteCreate, UserAcceptInvite, UserManagementResponse, UserDirectCreate, UserResponse, UserModulesUpdate
+from app.schemas.user import UserInviteCreate, UserAcceptInvite, UserManagementResponse, UserDirectCreate, UserResponse, UserModulesUpdate, PasswordChangeRequest
 
 router = APIRouter(prefix="/api/users", tags=["users"])
 
@@ -253,3 +253,20 @@ async def delete_user(
         
     await db.delete(user)
     await db.commit()
+
+
+@router.post("/change-password")
+async def change_password(
+    data: PasswordChangeRequest,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Change password for the currently authenticated user."""
+    if not bcrypt.verify(data.current_password, user.password_hash):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Incorrect current password"
+        )
+    user.password_hash = bcrypt.hash(data.new_password)
+    await db.commit()
+    return {"message": "Password changed successfully"}

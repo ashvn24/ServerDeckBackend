@@ -152,3 +152,17 @@ class WaitlistResponse(BaseModel):
 
     model_config = {"from_attributes": True}
 
+
+# ---- Password Management schemas ----
+
+class PasswordChangeRequest(BaseModel):
+    current_password: str
+    new_password: str = PasswordStr
+
+class ForgotPasswordRequest(BaseModel):
+    email: EmailStr
+
+class PasswordResetRequest(BaseModel):
+    token: str
+    new_password: str = PasswordStr
+
