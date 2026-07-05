@@ -716,6 +716,7 @@ async def approve_waitlist(
             is_active=True
         )
         db.add(admin_user)
+        await db.flush()
         
         # Reset path to public to delete waitlist req
         await set_search_path(db, "public")
@@ -757,6 +758,7 @@ async def approve_waitlist(
             is_active=True
         )
         db.add(user)
+        await db.flush()
 
         # Reset path to public to delete waitlist req
         await set_search_path(db, "public")
