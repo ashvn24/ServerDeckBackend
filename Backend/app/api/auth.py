@@ -384,6 +384,7 @@ async def login_2fa(data: TwoFactorLoginRequest, db: AsyncSession = Depends(get_
         await db.flush()
 
     await record_audit(db, user.id, None, "auth.login.2fa", details={"email": email})
+    await db.flush()
 
     token = create_access_token(user, schema_name)
     from app.services.tenant import get_user_resolved_modules, get_org_enabled_modules
