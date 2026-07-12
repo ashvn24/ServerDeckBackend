@@ -45,11 +45,19 @@ fi
 # e.g. ws://localhost:8000/ws/agent → http://localhost:8000
 PORTAL_HTTP=$(echo "$PORTAL_URL" | sed 's|^wss://|https://|; s|^ws://|http://|; s|/ws/agent$||')
 
-echo -e "${GREEN}╔══════════════════════════════════════╗${NC}"
-echo -e "${GREEN}║     ServerDeck Agent Installer       ║${NC}"
-echo -e "${GREEN}╚══════════════════════════════════════╝${NC}"
+echo -e "${GREEN}"
+cat << "EOF"
+   _____                            ____             __   
+  / ___/___  ______   _____  _____ / __ \___  _____/ /__ 
+  \__ \/ _ \/ ___/ | / / _ \/ ___// / / / _ \/ ___/ //_/
+ ___/ /  __/ /   | |/ /  __/ /   / /_/ /  __/ /__/ ,<   
+/____/\___/_/    |___/\___/_/   /_____/\___/\___/_/|_|  
+EOF
+echo -e "${NC}"
+
+echo -e "${GREEN}                ServerDeck Agent Installer${NC}"
 echo ""
-echo -e "  Portal: ${YELLOW}$PORTAL_HTTP${NC}"
+echo -e "  Portal: ${YELLOW}${PORTAL_HTTP}${NC}"
 echo ""
 
 # Step 1: Install system dependencies
