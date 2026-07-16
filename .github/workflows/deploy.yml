@@ -18,7 +18,9 @@ jobs:
           host: ${{ secrets.EC2_HOST }}
           username: ${{ secrets.EC2_USER }}
           key: ${{ secrets.EC2_SSH_KEY }}
+          script_stop: true
           script: |
+            git config --global --add safe.directory /coderepo/ServerDeckBackend
             cd /coderepo/ServerDeckBackend
             git fetch origin
             git checkout main || git checkout -b main
