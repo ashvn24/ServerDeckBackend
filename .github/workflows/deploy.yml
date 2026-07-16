@@ -20,13 +20,11 @@ jobs:
           key: ${{ secrets.EC2_SSH_KEY }}
           script_stop: true
           script: |
-            git config --global --add safe.directory /coderepo/ServerDeckBackend
             cd /coderepo/ServerDeckBackend
-            git fetch origin
-            git checkout main || git checkout -b main
-            git reset --hard origin/main
-            source /coderepo/ServerDeckBackend/venvsd/bin/activate
-            pip install -r Backend/requirements.txt --quiet
+            sudo git fetch origin
+            sudo git checkout main || sudo git checkout -b main
+            sudo git reset --hard origin/main
+            sudo /coderepo/ServerDeckBackend/venvsd/bin/pip install -r Backend/requirements.txt --quiet
             sudo systemctl daemon-reload
             sudo systemctl restart serverdeckapi.service
 
