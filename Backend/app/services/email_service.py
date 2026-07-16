@@ -294,3 +294,37 @@ async def send_otp_email(to_email: str, name: str, code: str):
     
     html_content = Template(BASE_HTML_TEMPLATE).substitute(body_content=body)
     await send_email_async(to_email, subject, html_content)
+
+
+async def send_access_request_alert_email(
+    requester_email: str,
+    name: str | None = None,
+    request_type: str | None = None,
+    org_name: str | None = None,
+):
+    """
+    Sends an alert email to ashwinvk77@gmail.com when a new waitlist/access request is created.
+    """
+    subject = f"Alert: New ServerDeck Access Request from {requester_email}"
+    
+    # Format details nicely for the template
+    name_str = name if name else "Not specified"
+    request_type_str = request_type if request_type else "Not specified"
+    org_name_str = org_name if org_name else "Not specified"
+    
+    body = f"""
+        <h2>New Access Request Received</h2>
+        <p>A new user has requested access on the ServerDeck landing page.</p>
+        <p><strong>Details:</strong></p>
+        <ul>
+            <li><strong>Email:</strong> {requester_email}</li>
+            <li><strong>Name:</strong> {name_str}</li>
+            <li><strong>Request Type:</strong> {request_type_str}</li>
+            <li><strong>Organization:</strong> {org_name_str}</li>
+        </ul>
+        <p>You can approve or reject this request in the platform admin panel.</p>
+    """
+    
+    html_content = Template(BASE_HTML_TEMPLATE).substitute(body_content=body)
+    await send_email_async("ashwinvk77@gmail.com", subject, html_content)
+

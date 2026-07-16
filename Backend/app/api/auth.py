@@ -408,7 +408,11 @@ async def login_2fa(data: TwoFactorLoginRequest, db: AsyncSession = Depends(get_
 # ── Waitlist (Public) ────────────────────────────────────────────────────────
 
 @router.post("/waitlist", response_model=WaitlistResponse, status_code=status.HTTP_201_CREATED)
-async def join_waitlist(data: WaitlistCreate, db: AsyncSession = Depends(get_db)):
+async def join_waitlist(
+    data: WaitlistCreate,
+    background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db)
+):
     """Join the waitlist/request access from the login or landing page."""
     # Check if they are already on the waitlist
     result = await db.execute(select(WaitlistRequest).where(WaitlistRequest.email == data.email))
@@ -424,6 +428,15 @@ async def join_waitlist(data: WaitlistCreate, db: AsyncSession = Depends(get_db)
             existing.password_hash = pwd_context.hash(data.password)
         await db.commit()
         await db.refresh(existing)
+
+        from app.services.email_service import send_access_request_alert_email
+        background_tasks.add_task(
+            send_access_request_alert_email,
+            requester_email=existing.email,
+            name=existing.name,
+            request_type=existing.request_type,
+            org_name=existing.org_name
+        )
         return existing
 
     # Check if email is already registered in individual schema
@@ -469,6 +482,16 @@ async def join_waitlist(data: WaitlistCreate, db: AsyncSession = Depends(get_db)
     db.add(waitlist_req)
     await db.commit()
     await db.refresh(waitlist_req)
+
+    from app.services.email_service import send_access_request_alert_email
+    background_tasks.add_task(
+        send_access_request_alert_email,
+        requester_email=waitlist_req.email,
+        name=waitlist_req.name,
+        request_type=waitlist_req.request_type,
+        org_name=waitlist_req.org_name
+    )
+
     return waitlist_req
 
 
