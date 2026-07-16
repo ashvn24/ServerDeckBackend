@@ -40,7 +40,8 @@ app = FastAPI(
     description="Lightweight agent-based Linux server management platform",
     version="0.1.0",
     lifespan=lifespan,
-    dependencies=[Depends(resolve_tenant)]
+    dependencies=[Depends(resolve_tenant)],
+    swagger_ui_parameters={"defaultModelsExpandDepth": -1}
 )
 
 app.include_router(api_app)
