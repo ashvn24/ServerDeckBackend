@@ -41,7 +41,8 @@ app = FastAPI(
     version="0.1.0",
     lifespan=lifespan,
     dependencies=[Depends(resolve_tenant)],
-    swagger_ui_parameters={"defaultModelsExpandDepth": -1}
+    docs_url=None,
+    redoc_url=None,
 )
 
 app.include_router(api_app)
