@@ -1,196 +1,238 @@
-# ServerDeck Agent
+﻿# ServerDeck
 
-The ServerDeck Agent is a lightweight Python service you install on any Linux server. It connects to your ServerDeck dashboard and lets you manage that server — services, deployments, logs, SSL, firewall — without ever opening a terminal.
+**ServerDeck is a self-hostable Linux server management platform that lets you monitor, control, and automate all your servers from a single dashboard — without SSH, without VPNs, and without opening any inbound ports.**
 
-This repository contains only the agent. The ServerDeck backend and frontend are separate. You self-host the backend or use the hosted version at [serverdeck.online](https://serverdeck.online).
-
----
-
-## How it works
-
-```
-┌─────────────────────────────────┐
-│        ServerDeck Dashboard     │
-│   (your browser + your backend) │
-└──────────────┬──────────────────┘
-               │ WebSocket (outbound from agent)
-    ┌──────────┴──────────┐
-    ▼                     ▼
-┌──────────┐        ┌──────────┐
-│  Agent   │        │  Agent   │
-│ Server A │        │ Server B │
-└──────────┘        └──────────┘
-```
-
-1. You add a server in the dashboard and get a one-line install command
-2. You run that command on your Linux server
-3. The agent installs itself as a systemd service and connects outbound to your backend
-4. From that point you manage the server entirely from the dashboard
-
-**The agent never opens any inbound ports.** All communication is outbound WebSocket from the agent to your backend. No firewall rules need to change on your server.
+> 🌐 Hosted version available at [serverdeck.online](https://serverdeck.online) — or self-host the backend on your own infrastructure.
 
 ---
 
-## What the agent can do
+## Why ServerDeck?
 
-Once installed, the agent accepts commands from your backend to:
+Managing Linux servers is fragmented. You SSH into each one individually, jump between `htop`, `systemctl`, `nginx`, `certbot`, `ufw`, and a dozen other tools — and you have to do it all over again for every server you manage. There is no central view, no audit trail, and no way to delegate access safely to a teammate without giving them raw SSH.
 
-- **Monitor** — report CPU, RAM, disk usage, and uptime in real time
-- **Nginx** — list sites, create/delete virtual hosts, enable/disable sites, edit configs, test config validity before applying
-- **Systemd** — list, start, stop, restart, enable, disable services; create new unit files
-- **PM2** — list, start, stop, restart, delete apps; create new app configs
-- **SSL** — list certificates, issue new certs via Certbot, renew existing certs
-- **Firewall** — list UFW rules, allow/deny ports, delete rules
-- **Files** — list, read, write, delete files; create directories; upload and download
-- **Logs** — fetch recent log lines or stream live logs from journald, nginx, or PM2
-- **Processes** — list running processes, kill by PID
-- **Terminal** — open a full interactive PTY session in your browser
-- **Scripts** — run arbitrary shell scripts
+Existing solutions either cost a fortune (Datadog, New Relic), require complex agents and network exposure (Ansible, Puppet), or are read-only dashboards that cannot actually do anything. ServerDeck takes a different approach:
+
+- **Lightweight agent** — a single Python process installed on your server in under a minute
+- **No inbound ports** — the agent connects *outbound* to your backend over WebSocket; your server's firewall never changes
+- **Full control** — not just monitoring, but actually managing services, nginx, SSL, files, firewalls, and running commands
+- **AI-powered alerting** — when something breaks, an LLM automatically diagnoses the cause and suggests a fix before you even open a terminal
 
 ---
 
-## Security
+## What Problem Does It Solve?
 
-This is the part that matters most — you are installing software on your production server, and you should know exactly what it does.
+### For solo developers and freelancers
+You are managing 3–10 VPS instances across DigitalOcean, Linode, Hetzner, and AWS. Each one requires its own SSH key, its own terminal window, and its own mental model. ServerDeck gives you one place to see all your servers, restart a crashed service, check disk usage, renew an SSL cert, or tail logs — from the browser, without memorizing IPs or keeping terminal sessions open.
 
-### What the agent does
-- Opens a single outbound WebSocket connection to your ServerDeck backend
-- Authenticates using a unique token generated when you add the server in the dashboard
-- Listens for commands from your backend only
-- Executes commands and sends results back over the same connection
-- Reports telemetry (CPU, RAM, disk, uptime) on a regular interval
+### For small DevOps teams
+You need to give a new team member access to restart one service on one server — but not SSH access to the whole machine. Or you need an audit trail of every command run on production. Or you need to know the moment a service goes down, with an AI explanation of *why* it went down. ServerDeck handles all of this without standing up a Kubernetes cluster or paying enterprise SaaS prices.
 
-### What the agent does NOT do
-- Does not open any inbound ports or listen for outside connections
-- Does not send any data to Anthropic, third parties, or anyone other than your own backend
-- Does not have access to your dashboard credentials or JWT secrets
-- Does not execute anything that is not in the action allowlist (unknown commands are rejected)
-- Does not persist any command history itself (that lives in your backend's audit log)
-
-### Token security
-- Your agent token is generated with `secrets.token_urlsafe(32)` — 256 bits of entropy
-- The token is stored in `/etc/serverdeck/agent.json` with permissions `chmod 600` (root-readable only)
-- The token is sent as a `Bearer` header on the WebSocket connection
-- If a token is compromised, you can revoke and regenerate it from the dashboard — the agent will reconnect with the new token on reinstall
-
-### Command allowlist
-The agent maintains an explicit allowlist of every action it will accept. Any command not in that list is rejected outright with an error — the agent does not evaluate or execute unknown command names under any circumstances.
-
-You can inspect the full allowlist in `serverdeck_agent/main.py` in this repository. Note that the installer compiles the agent to bytecode and removes all `.py` source from the server, so the installed machine carries only compiled `.pyc` files — audit the source here in the repo, not on the target host.
-
-### Verifying the install script
-Before running the install command, you can verify what it does:
-
-```bash
-# Download the install script without running it
-curl -o install.sh https://serverdeck.online/agent/install.sh
-
-# Read it
-cat install.sh
-
-# Check the SHA256 of the agent archive before installing
-curl -s https://serverdeck.online/agent/checksum.txt
-```
-
-The install script:
-1. Downloads the agent tar.gz and verifies its checksum
-2. Extracts it to `/opt/serverdeck/`
-3. Creates a Python virtual environment and installs dependencies
-4. Compiles the agent to bytecode and deletes all `.py` source files
-5. Writes your agent token to `/etc/serverdeck/agent.json`
-6. Creates and enables a systemd service `serverdeck-agent`
-
-Nothing else.
-
-### Verifying what the agent is doing after install
-```bash
-# Check what network connections the agent has open
-ss -tnp | grep serverdeck
-
-# View the agent's live logs
-journalctl -u serverdeck-agent -f
-
-# See the agent config (token is in here)
-cat /etc/serverdeck/agent.json
-
-# Check what the systemd service looks like
-systemctl cat serverdeck-agent
-```
+### For agencies and MSPs
+You manage servers for multiple clients. Each client is isolated in their own tenant schema — their servers, their users, their alert rules, and their tickets are completely separate. You can give a client's team view-only access while your engineers retain full control.
 
 ---
 
-## Installation
+## Who Is This For?
 
-You get your install command from the ServerDeck dashboard when you add a server. It looks like this:
-
-```bash
-curl -fsSL https://serverdeck.online/agent/install.sh | bash -s -- --token YOUR_TOKEN --backend wss://serverdeck.online
-```
-
-**Requirements:**
-- Ubuntu 20.04+ or Debian 11+ (other distros may work but are untested)
-- Python 3.10 or higher
-- systemd
-- Root or sudo access for the install
-
----
-
-## Uninstalling
-
-From the dashboard: go to the server, click Delete. If the server is online, the dashboard sends a self-uninstall command to the agent which removes everything cleanly.
-
-Manually:
-```bash
-systemctl stop serverdeck-agent
-systemctl disable serverdeck-agent
-rm -rf /opt/serverdeck/
-rm -rf /etc/serverdeck/
-rm /etc/systemd/system/serverdeck-agent.service
-systemctl daemon-reload
-```
-
----
-
-## Files installed on your server
-
-| Path | What it is |
+| User | What they use ServerDeck for |
 |---|---|
-| `/opt/serverdeck/` | Compiled agent bytecode (`.pyc`, no source) and Python virtual environment |
-| `/etc/serverdeck/agent.json` | Config file: backend URL and agent token (chmod 600) |
-| `/etc/systemd/system/serverdeck-agent.service` | Systemd unit file |
-| `/var/log/` | Logs go through journald, not a separate file |
-
-That is everything. No cron jobs, no additional services, no other files.
+| **Solo developer** | Dashboard for personal VPS fleet — one place for metrics, logs, restarts |
+| **Startup team** | Shared server management without shared SSH keys; audit logs for compliance |
+| **Agency / MSP** | Multi-tenant: manage multiple client environments from one backend |
+| **Support engineer** | Ticket system + limited server access; no SSH required |
+| **DevOps engineer** | Alerting, AI diagnosis, and a scriptable API on top of server management |
 
 ---
 
-## Running from source
+## How It Works
 
-If you want to run the agent directly instead of using the install script:
+```
++------------------------------------------+
+|           ServerDeck Dashboard           |
+|      (browser -> your backend API)       |
++--------------------+---------------------+
+                     |  HTTPS / WebSocket
+          +----------+-----------+
+          v                      v
+     +---------+           +---------+
+     |  Agent  |           |  Agent  |  <- outbound WebSocket only
+     | Server A|           | Server B|     no inbound ports opened
+     +---------+           +---------+
+```
+
+1. **Add a server** in the dashboard — get a one-line install command
+2. **Run it** on your Linux server — the agent installs itself as a systemd service
+3. The agent connects **outbound** to your backend over a persistent WebSocket
+4. Every action you take in the dashboard is relayed to the agent as a signed command
+5. Results stream back in real time
+
+**The agent never opens any inbound ports.** No firewall rules need to change on your servers.
+
+---
+
+## Core Features
+
+### Real-Time Monitoring
+Live CPU, RAM, disk, and uptime metrics streamed over WebSocket. All data stays in your database — no third-party analytics.
+
+### Service Management
+- **systemd** — list, start, stop, restart, enable, disable, and create unit files
+- **PM2** — full app lifecycle management for Node.js processes
+- **Nginx** — manage virtual hosts, enable/disable sites, edit configs with live validation before applying
+
+### SSL and Security
+- List all certificates on a server
+- Issue and renew certs via Certbot with one click
+- Manage UFW firewall rules (allow, deny, delete) directly from the dashboard
+
+### Files and Logs
+- Browse, read, write, and delete files on your server
+- Tail logs in real time from journald, nginx, or PM2
+- Upload and download files through the dashboard
+
+### Intelligent Alerting
+Define rules on any server metric:
+- CPU, RAM, or disk above a threshold
+- Service down (a specific systemd service not running)
+- Server offline for more than 5 minutes
+- SSL certificate expiring within N days
+
+When an alert fires, ServerDeck automatically runs an **AI diagnosis** (via Groq / Llama 3.3 70B):
+1. Fetches the last 200 lines of relevant logs from the server
+2. Fetches current service statuses
+3. Reviews the recent audit log of commands run on that server
+4. Returns a plain-English explanation, a suggested fix, and a ready-to-run shell command
+
+The diagnosis result is pushed to your dashboard in real time — you often know *why* something broke before you have even opened a new tab.
+
+### Ticket System
+Built-in support ticket system scoped to your team:
+- Create tickets manually or link them to a fired alert
+- Assign to team members, set priority and status
+- Supports a `support` role with ticket-only access (no server access)
+
+### Audit Log
+Every command sent to every server is recorded: who ran it, when, and what the outcome was. Immutable, per-tenant.
+
+### Multi-Tenancy
+The backend is fully multi-tenant using PostgreSQL schema isolation:
+- Each organisation gets its own schema (`tenant_acme`, `tenant_globex`, etc.)
+- Individual users (personal email addresses) share a pooled `tenant_individual` schema
+- No data leakage between tenants by construction — the DB `search_path` is set per-request from the JWT
+
+### Browser Terminal
+Open a full interactive PTY session directly in your browser. Useful when you need raw access without leaving the dashboard.
+
+---
+
+## Architecture
+
+| Layer | Technology |
+|---|---|
+| **Backend API** | Python, FastAPI, async SQLAlchemy |
+| **Database** | PostgreSQL (multi-schema, one schema per tenant) |
+| **Migrations** | Alembic (scoped public/tenant migrations) |
+| **Real-time** | WebSocket (FastAPI native) |
+| **Agent** | Python, WebSocket client, systemd service |
+| **AI Diagnosis** | Groq API (Llama 3.3 70B) |
+| **Auth** | JWT, TOTP two-factor, invite-link team onboarding |
+
+---
+
+## Repository Structure
+
+This repository contains the **backend API** and deployment scripts.
+
+```
+ServerDeckBackend/
+├── Backend/
+│   ├── app/
+│   │   ├── api/              # FastAPI route handlers (servers, alerts, tickets, auth, ...)
+│   │   ├── models/           # SQLAlchemy ORM models
+│   │   ├── schemas/          # Pydantic request/response schemas
+│   │   ├── services/
+│   │   │   ├── alert_service.py      # Background alerting loop (runs every 60s)
+│   │   │   ├── diagnosis_service.py  # AI diagnosis via Groq
+│   │   │   ├── tenant.py             # Multi-tenant schema resolution
+│   │   │   ├── command_bridge.py     # Routes commands to agent WebSockets
+│   │   │   └── email_service.py      # Invite and notification emails
+│   │   └── ws/               # WebSocket handlers (agent <-> client)
+│   ├── alembic/              # Database migrations
+│   │   └── versions/         # Individual migration files
+│   ├── migrate_tenants.py    # Apply migrations across all tenant schemas
+│   └── gen_migration.py      # Autogenerate scoped public/tenant migrations
+```
+
+The **agent** (installed on your Linux servers) lives in a separate repository: [serverdeck-agent](https://github.com/ashvn24/serverdeck-agent).
+
+---
+
+## Getting Started (Self-Hosted)
+
+### Requirements
+- Python 3.10+
+- PostgreSQL 14+
+- A server to host the backend
+
+### 1. Clone and configure
 
 ```bash
-git clone https://github.com/ashvn24/serverdeck-agent
-cd serverdeck-agent
+git clone https://github.com/ashvn24/ServerDeckBackend
+cd ServerDeckBackend/Backend
 
-python -m venv venv
-source venv/bin/activate
+cp .env.example .env
+# Edit .env: DATABASE_URL, SECRET_KEY, GROK_API_KEY, CORS origins, etc.
+```
+
+### 2. Set up the database
+
+```bash
+python -m venv venvsd
+source venvsd/bin/activate
 pip install -r requirements.txt
 
-# Create config
-mkdir -p /etc/serverdeck
-echo '{"backend_url": "wss://your-backend.com", "agent_token": "your-token"}' > /etc/serverdeck/agent.json
+# Run public-schema migrations
+alembic upgrade head
 
-# Run
-python -m serverdeck_agent.main
+# Run tenant migrations across all tenant_* schemas
+python migrate_tenants.py
 ```
+
+### 3. Start the API
+
+```bash
+uvicorn app.main:app --host 0.0.0.0 --port 8000
+```
+
+### 4. Install an agent on a server
+
+Add a server in the dashboard, copy the generated install command, run it on your Linux server. The agent registers itself, connects, and starts reporting immediately.
+
+---
+
+## Security Model
+
+The agent is the most security-sensitive part of the system. Key properties:
+
+| Property | Detail |
+|---|---|
+| **No inbound ports** | Agent connects outbound only; your firewall is untouched |
+| **Token auth** | 256-bit random token per server, `chmod 600`, verified on every connection |
+| **Command allowlist** | Agent only accepts an explicit whitelist of action names; unknown commands are rejected |
+| **No source on production** | Install script compiles to `.pyc` and removes all `.py` files from the host |
+| **Tenant isolation** | Each tenant has a separate PostgreSQL schema; `search_path` is set from the JWT |
+| **Schema validation** | Tenant schema names are validated against a strict regex before use in any SQL |
+| **Audit trail** | Every command, actor, and result is logged — immutable, per-tenant |
+
+See the [agent repository](https://github.com/ashvn24/serverdeck-agent) for the full security documentation and the complete command allowlist.
 
 ---
 
 ## Contributing
 
-Found a security issue? Please do not open a public issue. Email **ashwinvk77@gmail.com** directly.
+Found a security issue? **Do not open a public issue.** Email **ashwinvk77@gmail.com** directly.
 
-Found a bug or want to suggest something? Open an issue or pull request. The agent is open source specifically so you can read it, audit it, and improve it.
+Found a bug or want to suggest a feature? Open an issue or pull request. The codebase is open source specifically so you can read it, audit it, and improve it.
 
 ---
 
